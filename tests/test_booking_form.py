@@ -61,16 +61,18 @@ def test_booking_form_builder_dell_freight():
 
 
 def test_booking_form_builder_carahsoft():
-    """Verify Carahsoft distributor and carrier account auto-notes."""
+    """Verify Carahsoft distributor and dynamic carrier extraction."""
     po = ParsedPO(
         source_id="carahsoft.pdf",
         po_number="25163692",
         quote_number="F5Q-01062638",
         po_total=Decimal("778650.04"),
         layout="carahsoft",
+        carriers=["UPS Ground"],
+        carrier_account="A8C902",
         parties=[
             {"role": "bill_to", "name": "Carahsoft Technology Corp", "lines": ["11493 Sunset Hills Rd"]},
-            {"role": "ship_to", "name": "Dallas County", "lines": ["Dallas County", "Dallas, TX"]},
+            {"role": "ship_to", "name": "Dallas County", "lines": ["Dallas County", "Dallas, TX"], "contact_name": "Nicolas Chilton"},
         ]
     )
     quote = Quote(
@@ -88,7 +90,7 @@ def test_booking_form_builder_carahsoft():
     assert form.account_name == "Dallas County"
     assert form.amount == Decimal("778650.04")
 
-    # Carrier note should contain Carahsoft standard UPS ground details
+    # Carrier note should dynamically reflect parsed PO carrier details
     carrier_notes = [n for n in form.notes if "Carrier" in n.title]
     assert len(carrier_notes) == 1
     assert "A8C902" in carrier_notes[0].body
@@ -96,7 +98,7 @@ def test_booking_form_builder_carahsoft():
 
 
 def test_booking_form_builder_zuora():
-    """Verify Zuora subscription sales order type and booking notes."""
+    """Verify Zuora subscription sales order type and dynamic term derivation."""
     po = ParsedPO(
         source_id="ntt.pdf",
         po_number="4501706557",
@@ -124,7 +126,7 @@ def test_booking_form_builder_zuora():
     assert form.sales_order_type == "Zuora Sales Order"
     zuora_notes = [n for n in form.notes if "Zuora" in n.title]
     assert len(zuora_notes) == 1
-    assert "36 months" in zuora_notes[0].body
+    assert "12 months" in zuora_notes[0].body
     assert "Bill Immediately" in zuora_notes[0].body
 
 

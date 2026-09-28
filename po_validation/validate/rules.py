@@ -196,14 +196,39 @@ def currency_matches(ctx: Ctx, p: dict) -> Finding:
 # the money checks
 # ---------------------------------------------------------------------------
 
+# Specifically target actual freight/shipping charges and fees.
+# Must NOT match software product terms like "Transport Layer Security" or "bot handling".
 FREIGHT_RE = re.compile(
-    r"\b(?:shipping|freight|delivery|transport(?:ation)?|handling)\b", re.I)
+    r"\b(?:"
+    r"freight(?:\s+(?:charges?|cost|fee|amount))?|"
+    r"shipping(?:\s+(?:charges?|cost|fee|amount|\s*&\s*handling))?|"
+    r"delivery\s+(?:charges?|fee|cost)|"
+    r"transportation\s+(?:charges?|fee|cost)|"
+    r"material\s+shipping(?:\s+charges?)?|"
+    r"handling\s+(?:charges?|fee)"
+    r")\b", re.I)
+
+NON_FREIGHT_TERMS = [
+    "transport layer security",
+    "tls",
+    "bot handling",
+    "exception handling",
+    "handling module",
+    "software",
+    "license",
+    "subscription",
+]
 
 
 def _is_freight_line(li) -> bool:
-    desc = getattr(li, "description", "") or ""
-    part = getattr(li, "part_number", "") or ""
-    return bool(FREIGHT_RE.search(desc) or FREIGHT_RE.search(part))
+    desc = (getattr(li, "description", "") or "").lower()
+    part = (getattr(li, "part_number", "") or "").lower()
+    combined = f"{desc} {part}".strip()
+    if not combined:
+        return False
+    if any(term in combined for term in NON_FREIGHT_TERMS):
+        return False
+    return bool(FREIGHT_RE.search(combined))
 
 
 def _match_lines_by_amount(ctx: Ctx, p: dict) -> list[Finding]:

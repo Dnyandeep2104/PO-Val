@@ -125,9 +125,11 @@ class BookingFormBuilder:
 
         is_zuora = (
             any((li.part_number or "").startswith("F5-NX-") for li in po.line_items) or
-            any("zuora" in (f.message or "").lower() for f in result.findings) or
-            "oracle" in (account_name or "").lower()
+            any("zuora" in (f.message or "").lower() for f in result.findings)
         )
+        if q and getattr(q, "quote_type", "").lower() == "zuora":
+            is_zuora = True
+
         if "synnex" in layout_lower:
             distributor = "NA - Synnex"
             sales_order_type = "P+I Booking Form"
@@ -144,18 +146,14 @@ class BookingFormBuilder:
             reseller_name = distributor
 
         # 4. Resolve Technical / Notification Contacts
-        # In F5 SOS, Shipping Notification & Order Notifications go to the F5 AE / Opportunity Owner
+        # Pull from Quote Opportunity owner / Sales Rep if resolved
         rep_email = getattr(q, "owner_email", None) or getattr(q, "sales_rep_email", None)
-        if not rep_email:
-            if "dell" in layout_lower or "PO706839" in (po.po_number or ""):
-                rep_email = "m.cook@f5.com"
-            elif "carahsoft" in layout_lower or "wwt" in layout_lower:
-                rep_email = "distiteam@f5.com"
+        if not rep_email and distributor in ("NA - Synnex", "NA - Carahsoft"):
+            rep_email = "distiteam@f5.com"
 
         reg_email = None
         ship_party = po.party("ship_to")
         end_user_party = po.party("end_user")
-        from_party = po.party("from")
 
         if end_user_party and end_user_party.get("emails"):
             reg_email = end_user_party["emails"][0]
@@ -165,16 +163,18 @@ class BookingFormBuilder:
             reg_email = po.party("bill_to")["emails"][0]
 
         # Determine Same As End User Contact Info
-        is_dell = "dell" in layout_lower or "dell" in (account_name or "").lower() or "PO706839" in (po.po_number or "")
-        same_as_end_user = True
-        if is_dell or (ship_party and end_user_party and ship_party.get("lines") != end_user_party.get("lines")):
-            same_as_end_user = False
+        # Must only be True if both exist and their addresses match. If no End User block exists, it is False.
+        same_as_end_user = False
+        if ship_party and end_user_party:
+            ship_lines = [line.strip().lower() for line in ship_party.get("lines", []) if line]
+            eu_lines = [line.strip().lower() for line in end_user_party.get("lines", []) if line]
+            if ship_lines and eu_lines and ship_lines == eu_lines:
+                same_as_end_user = True
 
-        # Order Issues is True if there are any validation findings, price variances, or review items
+        # Order Issues is True ONLY if there are rule failures, review outcome, or price variance
         has_issues = bool(
             result.by_status(Status.FAIL) or
             result.outcome.value in ("NEEDS_REVIEW", "REJECTED") or
-            len(result.findings) > 0 or
             freight_sum > 0
         )
 
@@ -209,40 +209,35 @@ class BookingFormBuilder:
     @classmethod
     def _attach_carrier_notes(cls, form: BookingForm, po: ParsedPO,
                               freight_lines: list, freight_sum: Decimal):
-        """Auto-drafts 'Note to RO: Carrier Information'."""
+        """Auto-drafts 'Note to RO: Carrier Information' dynamically from PO shipping data."""
         if freight_lines:
-            # E.g. Dell line 2 shipping
+            # Freight pass-through charge on PO
             lines_desc = ", ".join(f"Line {li.line_no or 'extra'}" for li in freight_lines)
             body = f"Shipping Via F5's FedEx account. See additional charge on {lines_desc}"
             form.notes.append(BookingNote(
                 title="Note to RO: Carrier Information",
                 body=body
             ))
-        elif (po.layout or "").lower() == "carahsoft":
-            body = (
-                "Carrier Account Information:\n"
-                "Carahsoft\n"
-                "11493 Sunset Hills Road, Suite 100\n"
-                "Reston, VA 20190 USA\n\n"
-                "Carrier: UPS\n"
-                "Method: Ground\n"
-                "Account #: A8C902\n"
-                "Nicolas Chilton"
-            )
-            form.notes.append(BookingNote(
-                title="Note to RO - Carrier Info",
-                body=body
-            ))
-        elif (po.layout or "").lower() == "wwt":
-            body = (
-                "World Wide Technology\n"
-                "108 Gateway Commerce Center Drive North\n"
-                "Edwardsville, IL 62025\n\n"
-                "Carrier: Fed Ex\n"
-                "Method: Ground\n"
-                "Account #: 696099375\n"
-                "Ryan Hanrahan (ryan.hanrahan@wwt.com, 1-877-350-0190)"
-            )
+        elif po.carriers or po.carrier_account:
+            carrier_str = ", ".join(po.carriers) if po.carriers else "Carrier"
+            acct_str = f"\nAccount #: {po.carrier_account}" if po.carrier_account else ""
+            ship_party = po.party("ship_to")
+            details = []
+            if ship_party:
+                if ship_party.get("name"):
+                    details.append(ship_party["name"])
+                if ship_party.get("lines") and len(ship_party["lines"]) > 1:
+                    details.extend(ship_party["lines"][1:])
+                contact_parts = [
+                    ship_party.get("contact_name"),
+                    ship_party.get("emails", [""])[0] if ship_party.get("emails") else "",
+                    ship_party.get("phones", [""])[0] if ship_party.get("phones") else "",
+                ]
+                contact_clean = ", ".join(p for p in contact_parts if p)
+                if contact_clean:
+                    details.append(f"Contact: {contact_clean}")
+            detail_str = "\n".join(details)
+            body = f"Carrier: {carrier_str}{acct_str}\n{detail_str}".strip() if detail_str else f"Carrier: {carrier_str}{acct_str}".strip()
             form.notes.append(BookingNote(
                 title="Note to RO: Carrier Information",
                 body=body
@@ -253,28 +248,26 @@ class BookingFormBuilder:
                                ship_party: Optional[dict],
                                end_user_party: Optional[dict],
                                q: Optional[Quote]):
-        """Auto-drafts 'Note to RO: End User Info' when required by RO."""
-        # For Dell, match Kelly King's exact contact & address block
-        if "dell" in (po.layout or "").lower() or "fogle" in (po.raw_text or "").lower():
-            body = "Dell USA LP 1 Dell Way Round Rock, Texas 78682-7000 United States Steven Fogle steve.fogle@dell.com +15127253914"
-            form.notes.append(BookingNote(
-                title="Note to RO: End User Info",
-                body=body
-            ))
-            return
-
-        target_party = end_user_party or ship_party or po.party("from") or po.party("bill_to")
+        """Auto-drafts 'Note to RO: End User Info' dynamically from extracted party info."""
+        target_party = end_user_party or ship_party or po.party("bill_to") or po.party("from")
         if not target_party:
             return
 
         lines = target_party.get("lines", [])
         addr_text = " ".join(lines[1:]) if len(lines) > 1 else ""
         name = target_party.get("name", "Customer")
-        contact = target_party.get("contact_name") or "Primary Contact"
+        contact = target_party.get("contact_name")
         email = target_party.get("emails", [""])[0] if target_party.get("emails") else ""
         phone = target_party.get("phones", [""])[0] if target_party.get("phones") else ""
 
-        body = f"{name}\n{addr_text}\nContact: {contact}\nEmail: {email}\nPhone: {phone}".strip()
+        parts = [name, addr_text]
+        if contact:
+            parts.append(contact)
+        if email:
+            parts.append(email)
+        if phone:
+            parts.append(phone)
+        body = " ".join(p.strip() for p in parts if p.strip())
         form.notes.append(BookingNote(
             title="Note to RO: End User Info",
             body=body
@@ -284,10 +277,25 @@ class BookingFormBuilder:
     def _attach_zuora_notes(cls, form: BookingForm, po: ParsedPO):
         """Auto-drafts 'Zuora Booking Notes' for subscription orders."""
         if form.sales_order_type == "Zuora Sales Order":
+            term = "36 months"
+            for li in po.line_items:
+                sku = (li.part_number or "").upper()
+                if "-1Y" in sku or "1-YEAR" in sku or "1YR" in sku:
+                    term = "12 months"
+                    break
+                elif "-2Y" in sku or "2-YEAR" in sku or "2YR" in sku:
+                    term = "24 months"
+                    break
+                elif "-3Y" in sku or "3-YEAR" in sku or "3YR" in sku:
+                    term = "36 months"
+                    break
+                elif "-5Y" in sku or "5-YEAR" in sku:
+                    term = "60 months"
+                    break
             body = (
                 "Order Effective Date: Same as Booking date\n"
                 "Billing Frequency: Annual\n"
-                "Term Duration: 36 months\n"
+                f"Term Duration: {term}\n"
                 "Invoice Date/ Bill Immediately: Bill Immediately\n\n"
                 "Please see the attached approval for order effective date."
             )

@@ -62,10 +62,26 @@ class F5AIClient:
         self.model = model or os.environ.get("F5AI_MODEL") or "claude-opus-4-6"
         self.timeout = timeout
 
-        # SSL context allowing internal certs (matching verify=False)
-        self.ssl_ctx = ssl.create_default_context()
-        self.ssl_ctx.check_hostname = False
-        self.ssl_ctx.verify_mode = ssl.CERT_NONE
+        # Verified SSL context supporting corporate CA bundle
+        self.ssl_ctx = self._get_ssl_context()
+
+    @staticmethod
+    def _get_ssl_context() -> ssl.SSLContext:
+        insecure = os.environ.get("F5AI_INSECURE_TLS", "").lower() in ("true", "1", "yes")
+        if insecure:
+            ctx = ssl.create_default_context()
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+            return ctx
+
+        cafile = (
+            os.environ.get("REQUESTS_CA_BUNDLE") or
+            os.environ.get("CURL_CA_BUNDLE") or
+            os.environ.get("SSL_CERT_FILE")
+        )
+        if cafile and os.path.exists(cafile):
+            return ssl.create_default_context(cafile=cafile)
+        return ssl.create_default_context()
 
     def _chat_completion(self, system_prompt: str, user_prompt: str) -> Optional[str]:
         """Send chat completion request to F5AI gateway."""
@@ -109,7 +125,7 @@ class F5AIClient:
         """Generates a 2-3 sentence executive summary for the SOS specialist."""
         system_prompt = (
             "You are an expert F5 Sales Operations (SOS) specialist. "
-            "Write a concise, professional 2-sentence summary of the purchase order "
+            "Write a concise, factual 2-sentence summary of the purchase order "
             "validation status for the booking team, highlighting any required actions or notes."
         )
 
@@ -120,7 +136,7 @@ class F5AIClient:
             f"Blockers: {blockers or 'None'}\n"
             f"Major Checklist Gaps: {majors or 'None'}\n"
             f"Attached Notes to RO: {notes or 'None'}\n\n"
-            "Provide a crisp 2-sentence summary ready for 1-click booking approval."
+            "Provide a crisp 2-sentence summary stating findings plainly."
         )
 
         ai_response = self._chat_completion(system_prompt, user_prompt)
@@ -131,15 +147,15 @@ class F5AIClient:
         if blockers:
             return (
                 f"Order {po_number} for {account} ({amount}) has {len(blockers)} blocking exception(s) "
-                f"({', '.join(blockers[:2])}). Requires sales rep resolution before booking."
+                f"({', '.join(blockers[:2])}). Requires resolution before booking can proceed."
             )
         if majors:
             notes_str = f" with {len(notes)} auto-drafted Note(s) to RO attached" if notes else ""
             return (
-                f"Order {po_number} for {account} ({amount}) validated successfully with standard checklist "
-                f"exceptions resolved{notes_str}. Ready for 1-click booking approval."
+                f"Order {po_number} for {account} ({amount}) has {len(majors)} item(s) requiring SOS specialist "
+                f"review ({', '.join(majors[:2])}){notes_str}."
             )
         return (
-            f"Order {po_number} for {account} ({amount}) is 100% clean and fully reconciled against quote. "
-            "Approved for immediate booking."
+            f"Order {po_number} for {account} ({amount}) passed all automated checks and is fully reconciled against quote. "
+            "Pending final SOS specialist approval."
         )

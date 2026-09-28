@@ -36,8 +36,8 @@ source_document: Purchase_Order_Checklist_2025_Flex_Memphis (7-Feb-2025)
 
 routing:
   VALIDATED:
-    create_booking_form: true
-    notify: []
+    create_booking_form: false
+    notify: [sos_approval_queue]
   NEEDS_REVIEW:
     create_booking_form: false
     notify: [sos_review_queue]

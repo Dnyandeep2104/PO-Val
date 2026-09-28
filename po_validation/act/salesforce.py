@@ -24,7 +24,7 @@ from ..booking.builder import BookingFormBuilder
 log = logging.getLogger(__name__)
 
 DEFAULT_API_VERSION = "v61.0"
-DEFAULT_SANDBOX_URL = os.environ.get("SF_INSTANCE_URL", "https://f5--e2e.sandbox.my.salesforce.com")
+DEFAULT_SANDBOX_URL = os.environ.get("SF_INSTANCE_URL", "https://f5--poclab.sandbox.my.salesforce.com")
 
 
 class SalesforceError(RuntimeError):
@@ -46,6 +46,25 @@ class _HttpResponse:
     def raise_for_status(self):
         if 400 <= self.status_code < 600:
             raise SalesforceError(f"HTTP {self.status_code}: {self.text}")
+
+
+def _get_ssl_context() -> ssl.SSLContext:
+    """Returns a verified SSL context, using F5 CA bundle if configured, or default system CA."""
+    insecure = os.environ.get("SF_INSECURE_TLS", "").lower() in ("true", "1", "yes")
+    if insecure:
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        return ctx
+
+    cafile = (
+        os.environ.get("REQUESTS_CA_BUNDLE") or
+        os.environ.get("CURL_CA_BUNDLE") or
+        os.environ.get("SSL_CERT_FILE")
+    )
+    if cafile and os.path.exists(cafile):
+        return ssl.create_default_context(cafile=cafile)
+    return ssl.create_default_context()
 
 
 def _http_request(method: str, url: str, headers: dict = None,
@@ -70,9 +89,7 @@ def _http_request(method: str, url: str, headers: dict = None,
         else:
             body = data
 
-    ctx = ssl.create_default_context()
-    ctx.check_hostname = False
-    ctx.verify_mode = ssl.CERT_NONE
+    ctx = _get_ssl_context()
 
     req = urllib.request.Request(url, data=body, headers=hdrs, method=method)
     try:
@@ -202,7 +219,9 @@ class SalesforceClient:
     def from_token(cls, instance_url: Optional[str] = None,
                    token: Optional[str] = None, **kw) -> "SalesforceClient":
         instance_url = instance_url or os.environ.get("SF_INSTANCE_URL", DEFAULT_SANDBOX_URL)
-        token = token or os.environ.get("SF_ACCESS_TOKEN", "DRAFT_POCLAB_TOKEN")
+        token = token or os.environ.get("SF_ACCESS_TOKEN")
+        if not token:
+            raise SalesforceError("Salesforce access token required. Provide token or set SF_ACCESS_TOKEN in environment.")
         return cls(instance_url, token, **kw)
 
     @classmethod
@@ -213,7 +232,9 @@ class SalesforceClient:
             or os.environ.get("SF_INSTANCE_URL")
             or DEFAULT_SANDBOX_URL
         )
-        token = os.environ.get("SF_ACCESS_TOKEN", "DRAFT_POCLAB_TOKEN")
+        token = os.environ.get("SF_ACCESS_TOKEN")
+        if not token:
+            raise SalesforceError("Salesforce access token not found. Please set SF_ACCESS_TOKEN in .env or environment.")
         dry_run_str = os.environ.get("SF_DRY_RUN", "true").lower()
         dry_run = dry_run_str in ("true", "1", "yes")
         return cls(instance_url=instance_url, access_token=token, dry_run=dry_run)
@@ -343,13 +364,18 @@ class SalesforceClient:
             }
 
         # Introspect schema and send only fields that exist and are createable in this sandbox
+        dropped_fields = []
         try:
             d = self.describe("Booking_Form__c")
             valid_createable = {f["name"] for f in d.get("fields", []) if f.get("createable", False)}
             clean_payload = {k: v for k, v in payload.items() if k in valid_createable and v is not None}
+            dropped_fields = [k for k in payload if k not in valid_createable]
+            if dropped_fields:
+                log.info("Dropped %d unsupported field(s) for this sandbox: %s", len(dropped_fields), dropped_fields)
             if "Opportunity__c" in valid_createable and "Opportunity__c" in payload:
                 clean_payload["Opportunity__c"] = payload["Opportunity__c"]
-        except Exception:
+        except Exception as exc:
+            log.warning("Could not describe Booking_Form__c schema: %s", exc)
             clean_payload = {k: v for k, v in payload.items() if v is not None}
 
         r = _http_request("POST", self._url("sobjects/Booking_Form__c/"),
@@ -370,7 +396,7 @@ class SalesforceClient:
                         timeout=30)
                     if note_resp.status_code == 201:
                         note_id = note_resp.json().get("id")
-                        _http_request(
+                        link_resp = _http_request(
                             "POST",
                             self._url("sobjects/ContentDocumentLink/"),
                             headers=self.headers,
@@ -381,7 +407,11 @@ class SalesforceClient:
                                 "Visibility": "AllUsers",
                             },
                             timeout=30)
-                        notes_created += 1
+                        if link_resp.status_code == 201:
+                            notes_created += 1
+                        else:
+                            log.warning("ContentDocumentLink failed for note '%s' (%d): %s",
+                                        note.title, link_resp.status_code, link_resp.text)
                 except Exception as exc:
                     log.warning("Could not attach ContentNote '%s': %s", note.title, exc)
 
@@ -391,7 +421,9 @@ class SalesforceClient:
                 "booking_form_id": rec_id,
                 "url": f"{self.instance_url}/lightning/r/Booking_Form__c/{rec_id}/view",
                 "notes_attached": notes_created,
+                "dropped_fields": dropped_fields,
                 "payload": payload,
+                "written_payload": clean_payload,
             }
 
         errors = body if isinstance(body, list) else [body]
@@ -402,7 +434,9 @@ class SalesforceClient:
             "errors": [{"code": e.get("errorCode"),
                         "message": e.get("message"),
                         "fields": e.get("fields")} for e in errors],
+            "dropped_fields": dropped_fields,
             "payload": payload,
+            "written_payload": clean_payload,
         }
 
 

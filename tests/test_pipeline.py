@@ -333,7 +333,9 @@ def test_only_validated_books(fixtures, quote):
 
     sf = FakeSF()
     engine = load_engine("sos", ledger=NullLedger(), rules_dir=RULES)
-    router = ExceptionRouter(sinks=[], routing=engine.checklist.spec["routing"])
+    auto_routing = dict(engine.checklist.spec["routing"])
+    auto_routing["VALIDATED"] = {"create_booking_form": True, "notify": []}
+    router = ExceptionRouter(sinks=[], routing=auto_routing)
     pipe = Pipeline(source=LocalFolderSource(fixtures["ingram_ok"].parent),
                     engine=engine,
                     quote_source=StubQuoteSource({quote.quote_number: quote}),
