@@ -27,7 +27,7 @@ from po_validation.models import Quote, QuoteLine
 
 from po_validation.pipeline import Pipeline
 from po_validation.report.writer import (ConsoleSink, ExceptionRouter,
-                                         JsonlSink, render_summary)
+                                         JsonlSink, LocalQueueSink, render_summary)
 from po_validation.resolve.base import StubQuoteSource
 from po_validation.validate.engine import load_engine
 from po_validation.booking.builder import BookingFormBuilder
@@ -174,6 +174,8 @@ def main(argv=None) -> int:
                     help="optional directory to move processed PDFs into")
     ap.add_argument("--failed-dir", default=None,
                     help="optional directory to move failed PDFs into")
+    ap.add_argument("--queue-dir", default="out/queues",
+                    help="directory where SOS exception and approval queues are routed (default: out/queues)")
     args = ap.parse_args(argv)
 
     args.folder = choose_folder(args.folder)
@@ -188,11 +190,19 @@ def main(argv=None) -> int:
     engine = load_engine(args.checklist, ledger=ledger,
                          rules_dir=Path(args.rules_dir))
 
+    queues = {
+        "sos_approval_queue": [LocalQueueSink("sos_approval_queue", base_dir=args.queue_dir)],
+        "sos_review_queue": [LocalQueueSink("sos_review_queue", base_dir=args.queue_dir)],
+        "reseller_response_queue": [LocalQueueSink("reseller_response_queue", base_dir=args.queue_dir)],
+        "engineering_queue": [LocalQueueSink("engineering_queue", base_dir=args.queue_dir)],
+    }
+
     router = ExceptionRouter(
         sinks=[ConsoleSink(verbose=args.verbose,
                            only_exceptions=args.exceptions_only),
                JsonlSink(args.results)],
         routing=engine.checklist.spec.get("routing", {}),
+        queues=queues,
     )
 
     # No quote file means no quote source, which makes the seven

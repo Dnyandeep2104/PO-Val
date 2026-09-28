@@ -145,6 +145,55 @@ data was unavailable rather than anything wrong with the PO.</p>
     return subject, body, plain
 
 
+def render_reseller_response_email(result: ValidationResult) -> str:
+    """Draft a professional, ready-to-send discrepancy email to the reseller/distributor."""
+    po = result.po
+    q = result.quote
+    po_num = po.po_number or "UNKNOWN"
+    quote_num = po.quote_number or "UNKNOWN"
+
+    reseller_name = "Orders"
+    if po.reseller_name:
+        reseller_name = po.reseller_name
+    elif po.layout and po.layout not in ("generic", "failed"):
+        reseller_name = po.layout.title()
+
+    recipient_email = getattr(po, "reseller_email", None) or ""
+
+    failed_checks = sorted(result.by_status(Status.FAIL),
+                           key=lambda f: SEVERITY_ORDER.get(f.severity.value, 9))
+
+    bullets = []
+    for f in failed_checks:
+        bullets.append(f"  • [{f.severity.value}] {f.message}")
+
+    issues_text = "\n".join(bullets) if bullets else "  • Order details do not reconcile with the referenced quote."
+    to_line = f"To: {recipient_email}\n" if recipient_email else ""
+
+    return f"""{to_line}Subject: Action Required: Purchase Order #{po_num} Discrepancy (Quote #{quote_num})
+
+Dear {reseller_name} Orders Team,
+
+Thank you for submitting purchase order #{po_num} referencing F5 quote #{quote_num}.
+
+During our automated purchase order validation, the following issue(s) were identified that require correction before we can book this order:
+
+{issues_text}
+
+Required Next Steps:
+1. Please review the referenced quote #{quote_num}.
+2. Issue an amended purchase order addressing the discrepancy noted above.
+3. Reply to this email or send the updated PO directly to purchaseorders@f5.com.
+
+If you have questions regarding the quote pricing, terms, or configuration, please contact your dedicated F5 Account Representative.
+
+Best regards,
+F5 Sales Operations (SOS)
+purchaseorders@f5.com
+"""
+
+
+
 class _EmailSinkBase(Sink):
     """Only emails outcomes that need a person. A queue that announces
     every success gets muted, and then it announces nothing."""

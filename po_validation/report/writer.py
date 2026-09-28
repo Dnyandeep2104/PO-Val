@@ -207,6 +207,60 @@ class TeamsWebhookSink(Sink):
             log.error("Teams webhook failed: %s", exc)
 
 
+class LocalQueueSink(Sink):
+    """Writes structured queue artifacts to local folders for SOS specialist review and action.
+
+    Creates:
+      - {po_num}_exception_brief.txt: Human-readable single-screen failure brief
+      - {po_num}_review.html: Rich HTML preview
+      - {po_num}_item.json: Machine-readable queue item
+      - {po_num}_draft_reseller_reply.txt: Ready-to-send discrepancy email (for reseller queues)
+    """
+
+    def __init__(self, queue_name: str, base_dir: str | Path = "out/queues"):
+        self.queue_name = queue_name
+        self.queue_dir = Path(base_dir) / queue_name
+        self.queue_dir.mkdir(parents=True, exist_ok=True)
+
+    def emit(self, result: ValidationResult) -> None:
+        from .email import render_email, render_reseller_response_email
+
+        po = result.po
+        po_num = po.po_number or Path(po.source_id).stem.replace(" ", "_")
+
+        # 1. Actionable Exception Brief (Text)
+        brief_file = self.queue_dir / f"{po_num}_exception_brief.txt"
+        brief_file.write_text(render_text(result, verbose=True))
+
+        # 2. Rich HTML email preview
+        _, html_body, _ = render_email(result)
+        html_file = self.queue_dir / f"{po_num}_review.html"
+        html_file.write_text(html_body)
+
+        # 3. Machine-readable JSON summary for dashboards / approval tools
+        meta_file = self.queue_dir / f"{po_num}_item.json"
+        item_data = {
+            "po_number": po.po_number,
+            "quote_number": po.quote_number,
+            "source_id": po.source_id,
+            "outcome": result.outcome.value,
+            "failed_count": len(result.by_status(Status.FAIL)),
+            "failures": [
+                {"severity": f.severity.value, "rule": f.rule_id, "msg": f.message}
+                for f in result.by_status(Status.FAIL)
+            ],
+            "routed_at": datetime.now().isoformat(),
+            "ready_for_approval": (result.outcome == Outcome.VALIDATED),
+        }
+        meta_file.write_text(json.dumps(item_data, indent=2))
+
+        # 4. If in reseller_response_queue, write pre-drafted reply email
+        if self.queue_name == "reseller_response_queue":
+            draft = render_reseller_response_email(result)
+            draft_file = self.queue_dir / f"{po_num}_draft_reseller_reply.txt"
+            draft_file.write_text(draft)
+
+
 # --------------------------------------------------------------- dispatcher
 
 class ExceptionRouter:
