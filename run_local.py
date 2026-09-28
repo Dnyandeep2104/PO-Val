@@ -22,7 +22,9 @@ from typing import Optional
 
 from po_validation.ingest.ledger import JsonLedger, NullLedger
 from po_validation.ingest.sources import LocalFolderSource
+from po_validation.ingest.watcher import FolderWatcher
 from po_validation.models import Quote, QuoteLine
+
 from po_validation.pipeline import Pipeline
 from po_validation.report.writer import (ConsoleSink, ExceptionRouter,
                                          JsonlSink, render_summary)
@@ -60,6 +62,41 @@ def load_stub_quotes(path: Path) -> StubQuoteSource:
                    for l in q.get("lines", [])],
         ))
     return src
+
+
+def write_booking_artifacts(res, bf_dir: Path, ai_client: F5AIClient) -> None:
+    """Generate Salesforce JSON payload, Outlook Adaptive Card, and HTML preview."""
+    po_num = res.po.po_number or Path(res.source_id).stem.replace(" ", "_")
+    form = BookingFormBuilder.build(res)
+    blocker_msgs = [f.message for f in res.findings if f.severity.value == "BLOCKER" and f.status.value == "FAIL"]
+    major_msgs = [f.message for f in res.findings if f.severity.value == "MAJOR" and f.status.value == "FAIL"]
+    note_titles = [n.title for n in form.notes]
+
+    summary = ai_client.generate_sos_summary(
+        po_number=res.po.po_number or "N/A",
+        account=form.account_name or "Unknown",
+        amount=f"{form.currency} ${form.amount:,.2f}",
+        blockers=blocker_msgs,
+        majors=major_msgs,
+        notes=note_titles,
+    )
+
+    # 1. Salesforce Booking_Form__c REST API Payload
+    sf_payload = form.to_salesforce_payload()
+    (bf_dir / f"{po_num}_salesforce_booking_form.json").write_text(
+        json.dumps(sf_payload, indent=2)
+    )
+
+    # 2. Outlook Actionable Adaptive Card (JSON)
+    card = render_adaptive_card(form, summary)
+    (bf_dir / f"{po_num}_outlook_card.json").write_text(
+        json.dumps(card, indent=2)
+    )
+
+    # 3. Outlook HTML Email Preview
+    html = render_html_email_preview(form, summary)
+    (bf_dir / f"{po_num}_email_preview.html").write_text(html)
+
 
 
 def choose_folder(folder: Optional[str]) -> Optional[str]:
@@ -129,6 +166,14 @@ def main(argv=None) -> int:
     ap.add_argument("--debug", action="store_true")
     ap.add_argument("--no-booking-forms", action="store_true",
                     help="do not generate Salesforce booking form payloads and cards")
+    ap.add_argument("--watch", action="store_true",
+                    help="continuously watch --folder for incoming PO PDFs and process automatically")
+    ap.add_argument("--poll-interval", type=float, default=2.0,
+                    help="seconds between folder scans in watch mode (default: 2.0)")
+    ap.add_argument("--processed-dir", default=None,
+                    help="optional directory to move processed PDFs into")
+    ap.add_argument("--failed-dir", default=None,
+                    help="optional directory to move failed PDFs into")
     args = ap.parse_args(argv)
 
     args.folder = choose_folder(args.folder)
@@ -175,47 +220,38 @@ def main(argv=None) -> int:
         salesforce=None,          # no writes in local mode
     )
 
+    bf_dir = Path("out/booking_forms")
+    bf_dir.mkdir(parents=True, exist_ok=True)
+    ai_client = F5AIClient()
+
+    if args.watch:
+        def on_new_result(res):
+            print(f"\n⚡ New PO Processed: {res.po.source_id} -> {res.outcome.value}")
+            if not args.no_booking_forms:
+                write_booking_artifacts(res, bf_dir, ai_client)
+                print(f"   📦 Generated Booking Form & Card in {bf_dir}/")
+
+        print(f"🚀 Automatic Ingestion Watcher active on '{args.folder}' (poll_interval={args.poll_interval}s)")
+        print("   Drop PDF files into this folder to process. Press Ctrl+C to exit.\n")
+        watcher = FolderWatcher(
+            watch_dir=args.folder,
+            pipeline=pipeline,
+            poll_interval=args.poll_interval,
+            processed_dir=args.processed_dir,
+            failed_dir=args.failed_dir,
+            on_result=on_new_result,
+        )
+        watcher.start()
+        return 0
+
     results = pipeline.run(limit=args.limit, reprocess=args.reprocess)
     print(render_summary(results))
 
     if not args.no_booking_forms and results:
-        bf_dir = Path("out/booking_forms")
-        bf_dir.mkdir(parents=True, exist_ok=True)
-        ai_client = F5AIClient()
         count = 0
         for res in results:
-            po_num = res.po.po_number or Path(res.source_id).stem.replace(" ", "_")
-            form = BookingFormBuilder.build(res)
-            blocker_msgs = [f.message for f in res.findings if f.severity.value == "BLOCKER" and f.status.value == "FAIL"]
-            major_msgs = [f.message for f in res.findings if f.severity.value == "MAJOR" and f.status.value == "FAIL"]
-            note_titles = [n.title for n in form.notes]
-
-            summary = ai_client.generate_sos_summary(
-                po_number=res.po.po_number or "N/A",
-                account=form.account_name or "Unknown",
-                amount=f"{form.currency} ${form.amount:,.2f}",
-                blockers=blocker_msgs,
-                majors=major_msgs,
-                notes=note_titles,
-            )
-
-            # 1. Salesforce Booking_Form__c REST API Payload
-            sf_payload = form.to_salesforce_payload()
-            (bf_dir / f"{po_num}_salesforce_booking_form.json").write_text(
-                json.dumps(sf_payload, indent=2)
-            )
-
-            # 2. Outlook Actionable Adaptive Card (JSON)
-            card = render_adaptive_card(form, summary)
-            (bf_dir / f"{po_num}_outlook_card.json").write_text(
-                json.dumps(card, indent=2)
-            )
-
-            # 3. Outlook HTML Email Preview
-            html = render_html_email_preview(form, summary)
-            (bf_dir / f"{po_num}_email_preview.html").write_text(html)
+            write_booking_artifacts(res, bf_dir, ai_client)
             count += 1
-
         print(f"\n📦 Generated {count} Salesforce Booking Form payload(s) & Outlook Cards in {bf_dir}/")
 
     print(f"\nchecklist : {engine.checklist}")
@@ -224,6 +260,7 @@ def main(argv=None) -> int:
 
     # Non-zero if anything needs a human, so this can gate a scheduled job.
     return 1 if any(r.outcome.value != "VALIDATED" for r in results) else 0
+
 
 
 if __name__ == "__main__":
