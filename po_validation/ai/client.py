@@ -20,7 +20,7 @@ from typing import Any, Optional
 logger = logging.getLogger("po_validation.ai")
 
 
-def load_env_file():
+def load_env_file(override: bool = True):
     """Simple parser for local .env without external dependencies."""
     env_path = Path(__file__).resolve().parent.parent.parent / ".env"
     if not env_path.exists():
@@ -34,7 +34,7 @@ def load_env_file():
                 k, v = line.split("=", 1)
                 k = k.strip()
                 v = v.strip().strip("'\"")
-                if k not in os.environ:
+                if override or k not in os.environ:
                     os.environ[k] = v
     except Exception as e:
         logger.debug(f"Could not load .env: {e}")

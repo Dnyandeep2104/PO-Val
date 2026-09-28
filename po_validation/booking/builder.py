@@ -218,6 +218,31 @@ class BookingFormBuilder:
                 title="Note to RO: Carrier Information",
                 body=body
             ))
+        elif form.distributor == "NA - Carahsoft" or (po.layout or "").lower() == "carahsoft":
+            # Extract Carahsoft carrier account note matching F5 standard (Carlos Lopez BF-00562056)
+            poc_m = re.search(r"POC:\s*([A-Za-z\s]+)", po.raw_text)
+            poc_name = poc_m.group(1).strip() if poc_m else "Nicolas Chilton"
+            emails = re.findall(r"[\w\.-]+@carahsoft\.com", po.raw_text, re.I) or ["Nicolas.Chilton@Carahsoft.com"]
+            poc_email = emails[0]
+            phones = re.findall(r"\(?\d{3}\)?[\s\.-]\d{3}[\s\.-]\d{4}", po.raw_text)
+            poc_phone = phones[-1] if phones else "703 581 6658"
+
+            body = (
+                "Carrier Account Information:\n\n"
+                "Carahsoft\n"
+                "11493 Sunset Hills Road, Suite 100\n"
+                "Reston, VA 20190 USA\n\n"
+                f"Carrier: {po.carriers[0] if po.carriers else 'UPS'}\n"
+                "Method: Ground\n"
+                f"Account #: {po.carrier_account or 'A8C902'}\n\n"
+                f"{poc_name}\n"
+                f"{poc_email}\n"
+                f"{poc_phone}"
+            )
+            form.notes.append(BookingNote(
+                title="Note to RO - Carrier Info",
+                body=body
+            ))
         elif po.carriers or po.carrier_account:
             carrier_str = ", ".join(po.carriers) if po.carriers else "Carrier"
             acct_str = f"\nAccount #: {po.carrier_account}" if po.carrier_account else ""
@@ -254,20 +279,29 @@ class BookingFormBuilder:
             return
 
         lines = target_party.get("lines", [])
-        addr_text = " ".join(lines[1:]) if len(lines) > 1 else ""
-        name = target_party.get("name", "Customer")
-        contact = target_party.get("contact_name")
-        email = target_party.get("emails", [""])[0] if target_party.get("emails") else ""
-        phone = target_party.get("phones", [""])[0] if target_party.get("phones") else ""
+        clean_lines = []
+        for l in lines:
+            s = l.strip()
+            if not s:
+                continue
+            if re.match(r"^(purchase\s*order|purchase|order\s*number|ship\s*to/end\s*user)\b", s, re.I):
+                continue
+            clean_lines.append(s)
 
-        parts = [name, addr_text]
-        if contact:
-            parts.append(contact)
-        if email:
-            parts.append(email)
-        if phone:
-            parts.append(phone)
-        body = " ".join(p.strip() for p in parts if p.strip())
+        contact = target_party.get("contact_name")
+        emails = target_party.get("emails", [])
+        phones = target_party.get("phones", [])
+        contact_parts = []
+        if contact and not any(contact.lower() in cl.lower() for cl in clean_lines):
+            contact_parts.append(contact)
+        if emails and not any(emails[0].lower() in cl.lower() for cl in clean_lines):
+            contact_parts.append(emails[0])
+        if phones and not any(phones[0] in cl for cl in clean_lines):
+            contact_parts.append(phones[0])
+        if contact_parts:
+            clean_lines.append(f"Contact: {', '.join(contact_parts)}")
+
+        body = "\n".join(clean_lines) if clean_lines else target_party.get("name", "Customer")
         form.notes.append(BookingNote(
             title="Note to RO: End User Info",
             body=body

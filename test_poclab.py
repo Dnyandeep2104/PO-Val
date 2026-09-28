@@ -149,67 +149,95 @@ def main():
 
     # For live writes, verify Opportunity ID exists in sandbox and satisfies validation rules
     if not dry_run:
-        real_opp_id = None
-        # 1. Prefer an Opportunity matching the customer account (e.g. Dell)
-        try:
-            opp_matches = client.query("SELECT Id, Name, Account.Name FROM Opportunity WHERE Name LIKE '%Dell%' OR Account.Name LIKE '%Dell%' LIMIT 1")
-            if opp_matches:
-                real_opp_id = opp_matches[0].get("Id")
-        except Exception:
-            pass
+        from decimal import Decimal
+        from po_validation.models import Quote
 
-        # 2. Fallback: check existing Booking Forms in sandbox
-        if not real_opp_id:
-            try:
-                bf_rows = client.query("SELECT Opportunity__c FROM Booking_Form__c WHERE Opportunity__c != null ORDER BY CreatedDate DESC LIMIT 5")
-                for row in bf_rows:
-                    cand = row.get("Opportunity__c")
-                    if cand:
-                        real_opp_id = cand
-                        break
-            except Exception:
-                pass
+        for res in target_results:
+            cand_name = None
+            if res.quote and res.quote.account_name:
+                cand_name = res.quote.account_name
+            elif res.po.party("ship_to"):
+                cand_name = res.po.party("ship_to").get("name")
+            elif res.po.party("bill_to"):
+                cand_name = res.po.party("bill_to").get("name")
 
-        # 3. Fallback: any active Opportunity
-        if not real_opp_id:
-            try:
-                opp_rows = client.query("SELECT Id, Name FROM Opportunity WHERE IsClosed = false LIMIT 1")
-                if not opp_rows:
-                    opp_rows = client.query("SELECT Id, Name FROM Opportunity LIMIT 1")
-                if opp_rows:
-                    real_opp_id = opp_rows[0].get("Id")
-            except Exception:
-                pass
+            real_opp_id = None
+            # 1. Prefer an Opportunity matching the customer account or PO number
+            if cand_name:
+                cand_clean = cand_name.split()[0].replace("'", "\\'")
+                try:
+                    opp_matches = client.query(f"SELECT Id, Name, Account.Name FROM Opportunity WHERE Name LIKE '%{cand_clean}%' OR Account.Name LIKE '%{cand_clean}%' LIMIT 1")
+                    if opp_matches:
+                        real_opp_id = opp_matches[0].get("Id")
+                except Exception:
+                    pass
 
-        # 4. Ensure Opportunity has 'Sales Order Type', 'PO# to F5', and 'Amount' populated to satisfy validation rules
-        if real_opp_id:
-            try:
-                d_opp = client.describe("Opportunity")
-                update_payload = {}
-                po_num = target_results[0].po.po_number or "PO706839"
-                po_amt = float(target_results[0].quote.total if target_results[0].quote else 73444.80)
-                for f in d_opp.get("fields", []):
-                    if not f.get("updateable"):
-                        continue
-                    fname = f.get("name")
-                    flabel = (f.get("label") or "").lower()
-                    f_lower = fname.lower()
-                    if "sales order type" in flabel or "sales_order_type" in f_lower or f_lower == "order_type__c":
-                        p_vals = [pv["value"] for pv in f.get("picklistValues", []) if pv.get("active")]
-                        update_payload[fname] = "Standard" if "Standard" in p_vals else (p_vals[0] if p_vals else "Standard")
-                    elif "po#" in flabel or "po_to_f5" in f_lower or "po # to f5" in flabel or "customer_po" in f_lower:
-                        update_payload[fname] = po_num
-                    elif f_lower == "amount":
-                        update_payload[fname] = po_amt
+            if not real_opp_id and res.po.po_number:
+                try:
+                    opp_matches = client.query(f"SELECT Id, Name FROM Opportunity WHERE PO_to_F5__c = '{res.po.po_number}' LIMIT 1")
+                    if opp_matches:
+                        real_opp_id = opp_matches[0].get("Id")
+                except Exception:
+                    pass
 
-                if update_payload:
-                    client.update("Opportunity", real_opp_id, update_payload)
-            except Exception:
-                pass
+            # 2. Fallback: check existing Booking Forms in sandbox
+            if not real_opp_id:
+                try:
+                    bf_rows = client.query("SELECT Opportunity__c FROM Booking_Form__c WHERE Opportunity__c != null ORDER BY CreatedDate DESC LIMIT 5")
+                    for row in bf_rows:
+                        cand = row.get("Opportunity__c")
+                        if cand:
+                            real_opp_id = cand
+                            break
+                except Exception:
+                    pass
 
-        for r in target_results:
-            if r.quote:
-                r.quote.opportunity_id = real_opp_id
+            # 3. Fallback: any active Opportunity
+            if not real_opp_id:
+                try:
+                    opp_rows = client.query("SELECT Id, Name FROM Opportunity WHERE IsClosed = false LIMIT 1")
+                    if not opp_rows:
+                        opp_rows = client.query("SELECT Id, Name FROM Opportunity LIMIT 1")
+                    if opp_rows:
+                        real_opp_id = opp_rows[0].get("Id")
+                except Exception:
+                    pass
+
+            # 4. Adapt Opportunity fields to match this specific PO
+            if real_opp_id:
+                try:
+                    d_opp = client.describe("Opportunity")
+                    update_payload = {}
+                    po_num = res.po.po_number or "UNKNOWN"
+                    po_amt = float(res.quote.total if (res.quote and res.quote.total) else (res.po.po_total or Decimal("0.0")))
+                    for f in d_opp.get("fields", []):
+                        if not f.get("updateable"):
+                            continue
+                        fname = f.get("name")
+                        flabel = (f.get("label") or "").lower()
+                        f_lower = fname.lower()
+                        if "sales order type" in flabel or "sales_order_type" in f_lower or f_lower == "order_type__c":
+                            p_vals = [pv["value"] for pv in f.get("picklistValues", []) if pv.get("active")]
+                            update_payload[fname] = "Standard" if "Standard" in p_vals else (p_vals[0] if p_vals else "Standard")
+                        elif "po#" in flabel or "po_to_f5" in f_lower or "po # to f5" in flabel or "customer_po" in f_lower:
+                            update_payload[fname] = po_num
+                        elif f_lower == "amount":
+                            update_payload[fname] = po_amt
+
+                    if update_payload:
+                        client.update("Opportunity", real_opp_id, update_payload)
+                except Exception:
+                    pass
+
+                if res.quote:
+                    res.quote.opportunity_id = real_opp_id
+                else:
+                    res.quote = Quote(
+                        quote_number=res.po.quote_number or "F5Q-01062638",
+                        total=res.po.po_total or Decimal("0"),
+                        opportunity_id=real_opp_id,
+                        is_final=True
+                    )
 
     for res in target_results:
         po_num = res.po.po_number or "UNKNOWN"

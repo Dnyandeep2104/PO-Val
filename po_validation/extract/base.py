@@ -72,7 +72,7 @@ TERMS_VALUE_RE = re.compile(
     r"due\s*on\s*receipt|prepaid|\bcod\b|\d+%\s*\d+\s*net\s*\d+)", re.I)
 
 CARRIER_ACCT_RE = re.compile(
-    r"(?:carrier|freight|shipping|ups|fedex|fed\s*ex|dhl)\s*"
+    r"(?:carrier|freight|shipping|ups|fedex|fed\s*ex|dhl)\s*(?:(?:ground|express|air|standard)\s+)?"
     r"(?:acct|account)\s*#?\s*[:\-]?\s*([A-Z0-9][A-Z0-9\-]{4,})", re.I)
 EORI_RE = re.compile(
     r"\bEORI\s*(?:number|no\.?|#)?\s*[:\-]?\s*([A-Z]{2}[A-Z0-9]{5,15})", re.I)

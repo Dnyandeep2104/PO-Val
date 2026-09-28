@@ -39,6 +39,7 @@ PARTY_LABELS: dict[str, list[str]] = {
                 r"shipping\s*address", r"delivery\s*address",
                 r"ship\s*to\s*address", r"ship\s*to\s*customer\s*name"],
     "end_user": [r"end\s*user", r"end\s*customer", r"end\s*user\s*info",
+                 r"ship\s*to\s*/\s*end\s*user\s*info", r"ship\s*to\s*/\s*end\s*user",
                  r"end\s*customer\s*name", r"end\s*user\s*company\s*name",
                  r"end\s*user\s*name", r"end\s*user\s*address",
                  r"end\s*customer\s*address"],
@@ -72,7 +73,7 @@ PERSON_RE = re.compile(
     r"\b([A-Z][a-z]{1,15},\s*[A-Z][a-z]{1,15})\b")
 ORG_WORDS = re.compile(
     r"\b(inc|llc|ltd|corp|corporation|company|co|gmbh|s\.?a\.?|pte|plc|"
-    r"technologies|technology|systems|solutions|group|holdings|university|"
+    r"technologies|technology|systems|solutions|services|logistics|group|holdings|university|"
     r"county|department|bank|assurance|ulc|lp|llp|ag|bv|nv|pty|srl|kk|as|oy|"
     r"sas|sarl|spa|aps|ab)\b", re.I)
 
@@ -131,7 +132,8 @@ class Party:
             if not s or len(s) < 3:
                 return None
             if re.match(r"^(attn|attention|c/o|po#|ph#|phone|email|tel|fax|"
-                        r"date|page|loc\s*name|code)\b", s, re.I):
+                        r"date|page|loc\s*name|code|agency\s*name|"
+                        r"reference\s*eu|ship\s*to)\b", s, re.I):
                 return None
             return s
 
@@ -333,12 +335,19 @@ def extract_parties(view: PdfView, max_lines: int = 16) -> list[Party]:
                             break
                         continue
                     text = " ".join(w.text for w in sorted(words, key=lambda w: w.x0))
-                    if _labels_in_row(Row(words, nxt.top, nxt.page)):
-                        break
                     if re.match(r"^(ship\s*method|payment\s*term|line\s*item|"
                                 r"item\s*(?:code|number)|ln\b|part\s*#|"
-                                r"terms\s*and|purchase\s*order\s*number)",
+                                r"terms\s*and|purchase\s*order\s*number|"
+                                r"subject\s*to\s*state|subject\s*to\s*sales\s*tax|"
+                                r"via\s*for\s*po|for\s*po\s*questions|"
+                                r"qty\b|quantity\b|unit\s*price|extended\s*price|"
+                                r"comments\b|total\s*(?:purchase|order)|payment\s*in|"
+                                r"please\s*send\s*(?:all|electronic))",
                                 text, re.I):
+                        break
+                    if re.search(r"\b(qty|quantity)\b.*\b(unit\s*price|extended\s*price|price)\b", text, re.I):
+                        break
+                    if re.search(r"\b\d+\s+[\d,]+\.\d{2}\s+[\d,]+\.\d{2}\b", text):
                         break
                     clean_text = re.sub(r"\(cid:\d+\)", "", text).strip(" :*,\t")
                     if clean_text:
