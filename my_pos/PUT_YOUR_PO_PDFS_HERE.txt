@@ -1,0 +1,3 @@
+Put your real purchase order PDF files in this folder.
+
+Then run:     python run_local.py --folder my_pos --verbose

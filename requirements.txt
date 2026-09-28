@@ -1,0 +1,23 @@
+# Everything needed to run the tool on your laptop.
+# Install with:  pip install -r requirements.txt
+
+pdfplumber>=0.11      # reads the PDFs
+PyYAML>=6.0           # reads rules/sos.yaml
+
+pytest>=8.0           # runs the tests
+reportlab>=4.0        # makes the practice PDFs
+
+# Only needed for scanned purchase orders. Safe to ignore the OCR
+# warning if these fail to install; the tool flags scans for a human
+# instead of guessing.
+pytesseract>=0.3.10
+pillow>=10.0
+
+# Optional / Cloud & Auth Integrations:
+# - pyjwt: for Salesforce Connected App JWT bearer authentication
+# - requests: optional HTTP convenience (code defaults to standard library urllib)
+# - pandas: for Databricks / Delta lake sink & Snowflake batch loader
+pyjwt>=2.8.0
+requests>=2.31.0
+pandas>=2.0.0
+snowflake-connector-python>=3.0.0

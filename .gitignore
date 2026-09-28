@@ -1,0 +1,24 @@
+# Secrets and local environments
+.env
+.env.*
+.venv/
+env/
+venv/
+*.pem
+*.key
+.snowflake/
+
+# Byte-compiled / cache files
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+
+# System and logs
+.DS_Store
+*.log
+out/
+
+# Customer PO documents (keep directory structure with text placeholder)
+my_pos/*.pdf
+!my_pos/PUT_YOUR_PO_PDFS_HERE.txt

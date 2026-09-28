@@ -1,0 +1,86 @@
+{
+  "_comment": "Hand-verified from the six sample POs. Every value here was read off the PDF by eye, not produced by the parser. null means the field is genuinely absent from the document, which is itself a checklist finding.",
+  "wwt_quote_3.pdf": {
+    "vendor": "World Wide Technology",
+    "quote_number": "F5Q-01083998",
+    "po_number": "4527709",
+    "po_total": "3749.92",
+    "currency": "USD",
+    "payment_terms": "NET 60",
+    "f5_entity": "CORP",
+    "line_items": [["F5-UPG-SFP28-SR", 4, "3749.92"]]
+  },
+  "synnex_pdf_1.pdf": {
+    "vendor": "TD SYNNEX",
+    "quote_number": "F5Q-00974839",
+    "po_number": "5308703",
+    "po_total": "14785.02",
+    "currency": "USD",
+    "payment_terms": "NET 30",
+    "f5_entity": "CORP",
+    "line_items": [
+      ["F5-BIG-LTM-VE-25MV18", 2, "3716.51"],
+      ["F5-ADD-BIG-APM-VE25M", 2, "6198.40"],
+      ["F5-SVC-BIG-VE+STDL13", 2, "1825.52"],
+      ["F5-SVC-BIG-VE+STDL13", 2, "3044.59"]
+    ]
+  },
+  "Vendor_PO__2516369200_1_1_1.pdf": {
+    "vendor": "Carahsoft",
+    "quote_number": "F5Q-01062638",
+    "po_number": "25163692",
+    "po_total": "778650.04",
+    "currency": "USD",
+    "payment_terms": "N30",
+    "f5_entity": "CORP",
+    "line_items": [
+      ["F5-BIG-BT-R10600", 4, "531777.52"],
+      ["F5-SVC-BIG-PRE-HW351", 4, "121064.76"],
+      ["F5-UPG-RACK-D", 4, "2519.00"],
+      ["F5-UPG-QSFP28-SR4", 16, "83853.76"],
+      ["F5-TRG-DEA1-1Y", 2, "8910.00"],
+      ["F5-TRG-PROD-UNIT", 925, "30525.00"]
+    ]
+  },
+  "4501706557_1_1_2.pdf": {
+    "vendor": "NTT / SAP",
+    "quote_number": "F5Q-01007707",
+    "po_number": "4501706557",
+    "po_total": "81075.60",
+    "currency": "USD",
+    "payment_terms": "30 DAYS NET",
+    "f5_entity": "CORP",
+    "line_items": [
+      ["F5-NX-LAB-CNE-BNDSUB", 36, "81075.60"],
+      ["F5-NX-LAB-CNE-ACT", 1, "0.00"],
+      ["F5-NX-LAB-CNF-SPK", 1, "0.00"],
+      ["F5-NX-LAB-CNF-EFW", 1, "0.00"],
+      ["F5-NX-LAB-CNF-PE", 1, "0.00"],
+      ["F5-NX-LAB-CNF-DNS", 1, "0.00"],
+      ["F5-NX-LAB-CNF-CGN", 1, "0.00"],
+      ["F5-NX-SPT-STD", 1, "0.00"]
+    ]
+  },
+  "PO706839_1_1.pdf": {
+    "vendor": "Dell / Ariba",
+    "quote_number": "F5Q-00972677",
+    "po_number": "PO706839",
+    "po_total": "74844.80",
+    "currency": "USD",
+    "payment_terms": "NET 90",
+    "f5_entity": "CORP",
+    "_note": "Part # column reads 'Not Available' on both lines. null is the correct extraction; the checklist then requires the quote number.",
+    "line_items": [[null, 20, "73444.80"], [null, 1400, "1400.00"]]
+  },
+  "5100098997_1_2.pdf": {
+    "vendor": "PayPal / Ariba",
+    "quote_number": "F5Q-00986557",
+    "po_number": "5100098997",
+    "po_total": "67081.60",
+    "currency": "USD",
+    "payment_terms": "NET 45",
+    "f5_entity": "CORP",
+    "_note": "Part numbers are PayPal internal refs, not F5 SKUs. Extracting them verbatim is correct; the no-F5-SKU rule is what must fire.",
+    "line_items": [["061925.1MG", 1, "63148.43"], ["061925.2MG", 1, "3933.17"]]
+  }
+}

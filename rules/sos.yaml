@@ -1,0 +1,353 @@
+# ============================================================================
+# SOS Purchase Order Checklist
+#
+# Implements: "Purchase Order Checklist", DOC OWNER: REVENUE OPERATIONS,
+# 7-FEB-2025 (Flex Memphis). Every rule cites the checkbox it comes from.
+#
+# Entities: F5, Inc = CORP | F5 Government Solutions, LLC = GSLLC
+#           F5 Networks Limited = EMEA | F5 Networks Singapore Pte Ltd = SG
+#
+# severity:
+#   BLOCKER - do not create a booking form; reject and notify
+#   MAJOR   - hold for a human
+#   MINOR   - record it, do not hold the order
+#   INFO    - observability only
+# ============================================================================
+
+checklist: sos
+version: 1.0
+description: Sales Order Support purchase order validation
+source_document: Purchase_Order_Checklist_2025_Flex_Memphis (7-Feb-2025)
+
+# Who owns each outcome, and what they do with it. This is the operating
+# model, not just plumbing — it is the part SOS needs to agree to.
+#
+#   VALIDATED     -> automation books it. Nobody is interrupted.
+#   NEEDS_REVIEW  -> SOS. Something on the PO needs a person: a missing
+#                    End User, an unusual Inco Term, a high-value order.
+#   REJECTED      -> SOS first, then the reseller. The PO contradicts the
+#                    quote or is missing something mandatory; it has to go
+#                    back rather than be fixed on our side.
+#   DEFERRED      -> nobody. The quote is not in the replica yet. Held and
+#                    retried automatically; only escalates if it persists.
+#   DUPLICATE     -> SOS. Same order arriving twice.
+#   EXTRACTION_FAILED -> engineering. We could not read the document; this
+#                    is our problem, not the reseller's.
+
+routing:
+  VALIDATED:
+    create_booking_form: true
+    notify: []
+  NEEDS_REVIEW:
+    create_booking_form: false
+    notify: [sos_review_queue]
+  REJECTED:
+    create_booking_form: false
+    notify: [sos_review_queue, reseller_response_queue]
+  EXTRACTION_FAILED:
+    create_booking_form: false
+    notify: [engineering_queue]
+  DUPLICATE:
+    create_booking_form: false
+    notify: [sos_review_queue]
+  DEFERRED:
+    create_booking_form: false
+    notify: []
+
+rules:
+
+  # -- parser health (not on the checklist; guards everything below) ---------
+
+  - id: text_layer_present
+    check: not_scanned_or_low_quality
+    severity: MAJOR
+    checklist_item: "(engineering) OCR'd documents need human eyes"
+
+  - id: line_arithmetic
+    check: line_arithmetic
+    severity: MAJOR
+    checklist_item: "(engineering) unit price x qty must equal line total"
+
+  - id: parser_self_check
+    check: po_total_self_consistent
+    tolerance: '1.00'
+    severity: MAJOR
+    checklist_item: "(engineering) extracted lines must sum to the PO total"
+
+  - id: extraction_confidence
+    check: min_confidence
+    threshold: 0.70
+    severity: MAJOR
+    checklist_item: "(engineering) low-confidence parse goes to a human"
+
+  # -- checkbox 1: PO issued to an F5 entity --------------------------------
+
+  - id: f5_entity
+    check: f5_entity_valid
+    allowed: [CORP, GSLLC, EMEA, SG]
+    severity: BLOCKER
+    checklist_item: "PO is issued to an F5 entity"
+
+  # -- checkbox 2: PO Number -------------------------------------------------
+
+  - id: po_number_present
+    check: field_present
+    field: po_number
+    label: PO number
+    severity: BLOCKER
+    checklist_item: "PO Number"
+
+  # -- checkbox 3: Payment Terms --------------------------------------------
+
+  - id: payment_terms_present
+    check: payment_terms_present
+    optional: true
+    severity: MINOR
+    checklist_item: "Payment Terms"
+
+  - id: payment_terms_within_limit
+    check: payment_terms_within_limit
+    severity: MAJOR
+    checklist_item: >
+      Payment Terms must not exceed established terms defaulted in Bill To
+      Account. SKIPs today: the Account default is not in the quote payload.
+      Add payment_terms to the quote source to activate this.
+
+  # -- checkbox 4: Bill To ---------------------------------------------------
+
+  - id: bill_to_present
+    check: party_present
+    role: bill_to
+    label: Bill To
+    severity: BLOCKER
+    checklist_item: "Bill To - clearly labeled legal entity name"
+
+  - id: bill_to_single
+    check: single_party
+    role: bill_to
+    label: Bill To
+    severity: BLOCKER
+    checklist_item: >
+      Multiple legal entity names on a singular PO not accepted;
+      multiple BT addresses on PO not accepted
+
+  # -- checkbox 5: Ship To ---------------------------------------------------
+
+  - id: ship_to_present
+    check: party_present
+    role: ship_to
+    label: Ship To
+    severity: BLOCKER
+    checklist_item: "Ship To - clearly labeled entity name"
+
+  - id: ship_to_no_care_of
+    check: party_no_care_of
+    role: ship_to
+    label: Ship To
+    severity: MAJOR
+    checklist_item: "Ship To - c/o verbiage rejected by F5"
+
+  - id: ship_to_physical_address
+    check: party_physical_address
+    role: ship_to
+    label: Ship To
+    severity: MAJOR
+    checklist_item: "Ship To - physical address (PO Box rejected by F5)"
+
+  - id: ship_to_contact
+    check: party_contact_complete
+    role: ship_to
+    label: Ship To
+    require: [contact_name, email, phone]
+    severity: MAJOR
+    checklist_item: "Ship To - Contact: First and Last Name, Email, Phone #"
+
+  # -- checkbox 6: End User --------------------------------------------------
+
+  - id: end_user_present
+    check: party_present
+    role: end_user
+    label: End User
+    severity: MAJOR
+    checklist_item: >
+      End User - clearly labeled entity name. If EU info is not present on
+      the PO, the details need to be provided in a note on the Booking or
+      RMA form(s), so this is a hold rather than a rejection.
+
+  - id: end_user_no_care_of
+    check: party_no_care_of
+    role: end_user
+    label: End User
+    severity: MAJOR
+    checklist_item: "End User - c/o verbiage rejected by F5"
+
+  - id: end_user_physical_address
+    check: party_physical_address
+    role: end_user
+    label: End User
+    severity: MAJOR
+    checklist_item: "End User - physical address (PO Box rejected by F5)"
+
+  - id: end_user_contact
+    check: party_contact_complete
+    role: end_user
+    label: End User
+    require: [contact_name, email, phone]
+    severity: MAJOR
+    checklist_item: "End User - Contact: First and Last Name, Email, Phone #"
+
+  # -- checkbox 7: Reseller (when applicable, not for Direct Sales) ---------
+
+  - id: reseller_physical_address
+    check: party_physical_address
+    role: reseller
+    label: Reseller
+    severity: MAJOR
+    checklist_item: "Reseller - physical address (PO Box rejected by F5)"
+
+  - id: reseller_contact
+    check: party_contact_complete
+    role: reseller
+    label: Reseller
+    require: [contact_name, email, phone]
+    severity: MAJOR
+    checklist_item: >
+      Reseller - Contact: First and Last Name, Email, Phone #. SKIPs on
+      direct sales, where no reseller block exists.
+
+  # -- checkbox 8: Inco Terms ------------------------------------------------
+
+  - id: inco_terms
+    check: inco_terms_acceptable
+    severity: MAJOR
+    checklist_item: >
+      Acceptable: FCA Ship Point, Origin, EXW. Destination Inco Terms only
+      accepted if/when approved. Not always present on PO, so absence SKIPs.
+
+  # -- checkbox 9: Product Information --------------------------------------
+
+  - id: product_info_or_quote
+    check: product_info_or_quote
+    severity: BLOCKER
+    checklist_item: >
+      SKU, Qty, Unit Price. If not present on the PO appropriately, Quote #
+      (CPQ) the PO is booking against is required.
+
+  - id: line_items_extracted
+    check: has_line_items
+    min: 1
+    severity: BLOCKER
+    checklist_item: "Product Information"
+
+  - id: quote_number_format
+    check: field_matches_pattern
+    field: quote_number
+    pattern: 'F5Q-\d{8}'
+    severity: MAJOR
+    checklist_item: "Quote # (CPQ) must be well formed when cited"
+
+  # -- checkbox 10: PO Total -------------------------------------------------
+
+  - id: po_total_present
+    check: field_present
+    field: po_total
+    label: PO total
+    severity: MAJOR
+    checklist_item: "PO Total"
+
+  # -- checkbox 11: Shipping Detail Requirements ----------------------------
+
+  - id: shipping_details
+    check: shipping_details
+    optional: true
+    severity: MINOR
+    checklist_item: >
+      FedEx, UPS or DHL: Carrier | Method | Carrier Account #. A freight
+      forwarder is an accepted alternative but cannot be confirmed
+      automatically, so this warns rather than fails.
+
+  - id: international_shipping
+    check: international_shipping
+    severity: MAJOR
+    checklist_item: >
+      Importer of Record required for ANY international shipment; EORI
+      number required when shipping into the EU or UK.
+
+  # -- quote reconciliation (not on the checklist; F5-side controls) --------
+
+  - id: duplicate_po
+    check: not_duplicate
+    severity: MAJOR
+    checklist_item: "(F5) same PO number must not be booked twice"
+
+  - id: quote_exists
+    check: quote_found
+    severity: BLOCKER
+    checklist_item: "(F5) cited quote must exist"
+
+  - id: opportunity_linked
+    check: opportunity_resolved
+    severity: BLOCKER
+    checklist_item: "(F5) Opportunity__c is required to create a Booking Form"
+
+  - id: quote_not_expired
+    check: quote_not_expired
+    grace_days: 0
+    severity: MAJOR
+    checklist_item: "(F5) quote must be current"
+
+  - id: bill_to_matches_account
+    check: party_matches_reference
+    role: bill_to
+    label: Bill To
+    reference: account_name
+    threshold: 0.6
+    severity: BLOCKER
+    checklist_item: >
+      (F5) The Bill To printed on the PO must be the account the quote was
+      raised against. Catches a PO booked to the wrong account, which
+      reconciles perfectly on price and is still wrong.
+
+  - id: end_user_matches_quote
+    check: party_matches_reference
+    role: end_user
+    label: End User
+    reference: end_user_name
+    threshold: 0.6
+    severity: MAJOR
+    checklist_item: "(F5) End User on the PO should match the quote"
+
+  - id: reseller_matches_quote
+    check: party_matches_reference
+    role: reseller
+    label: Reseller
+    reference: reseller_name
+    threshold: 0.6
+    severity: MAJOR
+    checklist_item: "(F5) Reseller on the PO should match the quote"
+
+  - id: quote_status_bookable
+    check: quote_status_bookable
+    allowed: [approved, accepted, active]
+    severity: BLOCKER
+    checklist_item: "(F5) only book against an approved quote"
+
+  - id: currency_match
+    check: currency_matches
+    severity: MAJOR
+    checklist_item: "(F5) PO currency must match the quote"
+
+  - id: line_items_match
+    check: line_items_match
+    price_tolerance: '1.00'
+    check_quantity: true
+    severity: MAJOR
+    extra_severity: BLOCKER
+    missing_severity: MAJOR
+    checklist_item: "(F5) PO lines must match the quote"
+
+  - id: order_total_match
+    check: po_total_matches_quote
+    tolerance: '1.00'
+    severity: MAJOR
+    checklist_item: "(F5) whole-order tolerance, independent of per-line"

@@ -1,0 +1,108 @@
+# ============================================================================
+# Renewals purchase order checklist (Alex Acosta's team)
+# ============================================================================
+#
+#   >>> PROVISIONAL AND UNSTARTED. <<<
+#
+# Prady: "they're pretty much the same, but they have a slightly different
+# checklist... let's just focus on the SOS one to start, and then we can
+# go to the renewals stuff."
+#
+# This file exists to prove the architecture holds: the second use case is
+# a copy of sos.yaml with a few rules loosened, removed, or added. Zero
+# Python differs between the two. Do not treat the contents as accurate
+# until the renewals checklist is shared.
+#
+# Run it with:  --checklist renewals
+# ============================================================================
+
+checklist: renewals
+version: 0.1-provisional
+description: Renewals purchase order validation
+
+routing:
+  VALIDATED:
+    create_booking_form: true
+    notify: []
+  NEEDS_REVIEW:
+    create_booking_form: false
+    notify: [renewals_review_queue]
+  REJECTED:
+    create_booking_form: false
+    notify: [renewals_review_queue]
+  EXTRACTION_FAILED:
+    create_booking_form: false
+    notify: [engineering_queue]
+  DUPLICATE:
+    create_booking_form: false
+    notify: [renewals_review_queue]
+
+rules:
+
+  - id: quote_number_present
+    check: field_present
+    field: quote_number
+    label: quote number
+    severity: BLOCKER
+
+  - id: quote_number_format
+    check: field_matches_pattern
+    field: quote_number
+    pattern: 'F5Q-\d{8}'
+    severity: MAJOR
+
+  - id: po_number_present
+    check: field_present
+    field: po_number
+    label: PO number
+    severity: MAJOR
+
+  - id: line_items_extracted
+    check: has_line_items
+    min: 1
+    severity: BLOCKER
+
+  - id: extraction_confidence
+    check: min_confidence
+    threshold: 0.70
+    severity: MAJOR
+
+  - id: parser_self_check
+    check: po_total_self_consistent
+    tolerance: '1.00'
+    severity: MAJOR
+
+  - id: duplicate_po
+    check: not_duplicate
+    severity: MAJOR
+
+  - id: quote_exists
+    check: quote_found
+    severity: BLOCKER
+
+  - id: opportunity_linked
+    check: opportunity_resolved
+    severity: BLOCKER
+
+  - id: quote_not_expired
+    # Renewal quotes routinely arrive close to or just past expiry, so a
+    # grace window is likely correct here where SOS wants zero. CONFIRM.
+    check: quote_not_expired
+    grace_days: 30
+    severity: MINOR
+
+  - id: line_items_match
+    check: line_items_match
+    price_tolerance: '1.00'
+    check_quantity: true
+    severity: MAJOR
+    extra_severity: BLOCKER
+    # Renewals are frequently partial: a customer renews a subset of what
+    # was quoted. Downgraded from MAJOR so it does not block every PO.
+    # CONFIRM WITH THE RENEWALS TEAM.
+    missing_severity: MINOR
+
+  - id: order_total_match
+    check: po_total_matches_quote
+    tolerance: '1.00'
+    severity: MAJOR

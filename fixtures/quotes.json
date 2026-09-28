@@ -1,0 +1,23 @@
+[
+  {
+    "quote_number": "F5Q-00972766",
+    "opportunity_id": "006do00000K8sFsAAJ",
+    "account_id": "0015000000Mbzb7AAB",
+    "currency": "USD",
+    "status": "Approved",
+    "lines": [
+      {
+        "part_number": "F5-BIG-VE-BTA-25MV18",
+        "quantity": 2,
+        "unit_price": "10082.52",
+        "total_price": "20165.04"
+      },
+      {
+        "part_number": "F5-SVC-BIG-VE+PREL13",
+        "quantity": 2,
+        "unit_price": "2038.53",
+        "total_price": "4077.06"
+      }
+    ]
+  }
+]
