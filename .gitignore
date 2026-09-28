@@ -22,3 +22,10 @@ out/
 # Customer PO documents (keep directory structure with text placeholder)
 my_pos/*.pdf
 !my_pos/PUT_YOUR_PO_PDFS_HERE.txt
+
+# Distribution & Build
+dist/
+build/
+*.egg-info/
+*.zip
+
