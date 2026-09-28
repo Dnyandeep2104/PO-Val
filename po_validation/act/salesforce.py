@@ -102,8 +102,10 @@ def _http_request(method: str, url: str, headers: dict = None,
 
 
 class SalesforceClient:
-    def __init__(self, instance_url: str, access_token: str,
-                 api_version: str = DEFAULT_API_VERSION, dry_run: bool = True):
+    def __init__(self, instance_url: str = DEFAULT_SANDBOX_URL,
+                 access_token: str = "dry_run_token",
+                 api_version: str = DEFAULT_API_VERSION,
+                 dry_run: bool = True):
         self.instance_url = instance_url.rstrip("/")
         self.access_token = access_token
         self.api_version = api_version
