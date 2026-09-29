@@ -81,7 +81,7 @@ def write_booking_artifacts(res, bf_dir: Path, ai_client: F5AIClient) -> None:
         notes=note_titles,
     )
 
-    key_stem = f"{po_num}_{result.po.content_hash[:8]}" if result.po.content_hash else po_num
+    key_stem = f"{po_num}_{res.po.content_hash[:8]}" if res.po.content_hash else po_num
 
     # 1. Salesforce Booking_Form__c REST API Payload
     sf_payload = form.to_salesforce_payload()
