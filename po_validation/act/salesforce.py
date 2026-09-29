@@ -379,6 +379,46 @@ class SalesforceClient:
         except Exception as exc:
             log.warning("Could not describe Booking_Form__c schema: %s", exc)
             clean_payload = {k: v for k, v in payload.items() if v is not None}
+        # Idempotency Check (#13): Check if a Booking Form already exists for this Opportunity + PO
+        if not self.dry_run and form.opportunity_id and form.po_number:
+            try:
+                safe_po = form.po_number.replace("'", "\\'")
+                safe_opp = form.opportunity_id.replace("'", "\\'")
+                soql = (
+                    f"SELECT Id, Name, Stage__c FROM Booking_Form__c "
+                    f"WHERE Opportunity__c = '{safe_opp}' "
+                    f"  AND (PO__c = '{safe_po}' OR Searchable_PO_Field__c = '{safe_po}') "
+                    f"LIMIT 1"
+                )
+                existing_rows = self.query(soql)
+                if existing_rows:
+                    rec_id = existing_rows[0].get("Id")
+                    rec_stage = existing_rows[0].get("Stage__c")
+                    log.info(
+                        "Idempotency match: Booking Form %s already exists (Stage: %s) "
+                        "for Opp %s and PO %s. Updating record rather than creating duplicate.",
+                        rec_id, rec_stage, form.opportunity_id, form.po_number
+                    )
+                    upd_resp = _http_request(
+                        "PATCH",
+                        self._url(f"sobjects/Booking_Form__c/{rec_id}"),
+                        headers=self.headers,
+                        json_data=clean_payload,
+                        timeout=30
+                    )
+                    return {
+                        "attempted": True,
+                        "success": upd_resp.status_code in (200, 204),
+                        "booking_form_id": rec_id,
+                        "idempotent_updated": True,
+                        "url": f"{self.instance_url}/lightning/r/Booking_Form__c/{rec_id}/view",
+                        "notes_attached": 0,
+                        "dropped_fields": dropped_fields,
+                        "payload": payload,
+                        "written_payload": clean_payload,
+                    }
+            except Exception as idemp_exc:
+                log.warning("Idempotency lookup failed: %s", idemp_exc)
 
         r = _http_request("POST", self._url("sobjects/Booking_Form__c/"),
                           headers=self.headers, json_data=clean_payload, timeout=30)

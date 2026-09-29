@@ -41,7 +41,9 @@ class BookingForm:
     amount: Decimal
     currency: str = "USD"
     sales_order_type: str = "Standard"        # Standard | Zuora Sales Order | P+I Booking Form
-    stage: str = "Booked"
+    stage: str = "In Process by SOS"          # Draft stage for SOS review
+    order_status: str = "Not Submitted"
+    integration_status: str = "Not Submitted"
     distributor: str = "None"                 # None | NA - Synnex | NA - Carahsoft
     reseller_name: str = "F5 Direct Deal"
     account_name: Optional[str] = None
@@ -68,6 +70,8 @@ class BookingForm:
             "CurrencyIsoCode": self.currency,
             "Sales_Order_Type__c": self.sales_order_type,
             "Stage__c": self.stage,
+            "Perpetual_Order_Status__c": self.order_status,
+            "Perpetual_Order_Integration_Status__c": self.integration_status,
             "Distributor__c": self.distributor,
             "Reseller_Name__c": self.reseller_name,
             "Account_Name__c": self.account_name,

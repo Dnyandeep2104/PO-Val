@@ -190,3 +190,88 @@ def test_carahsoft_no_carrier_account_does_not_hallucinate_fake_fallbacks():
     assert "A8C902" not in body
     assert "Nicolas Chilton" not in body
     assert "Account #: Not specified on PO" in body
+
+
+def test_booking_form_draft_stage_and_payload():
+    """Verify Booking Form defaults to draft stage 'In Process by SOS' with 'Not Submitted' status."""
+    po = ParsedPO(
+        source_id="order.pdf",
+        po_number="PO-12345",
+        quote_number="F5Q-001122",
+        po_total=Decimal("100.00"),
+    )
+    quote = Quote(
+        quote_number="F5Q-001122",
+        opportunity_id="006Po00000efMf3IAE",
+        account_name="Acme Corp",
+        lines=[QuoteLine(part_number="SKU-1", total_price=Decimal("100.00"))],
+    )
+    res = ValidationResult(po=po, quote=quote)
+    form = BookingFormBuilder.build(res)
+
+    assert form.stage == "In Process by SOS"
+    assert form.order_status == "Not Submitted"
+    assert form.integration_status == "Not Submitted"
+
+    payload = form.to_salesforce_payload()
+    assert payload["Stage__c"] == "In Process by SOS"
+    assert payload["Perpetual_Order_Status__c"] == "Not Submitted"
+    assert payload["Perpetual_Order_Integration_Status__c"] == "Not Submitted"
+    assert payload["Opportunity__c"] == "006Po00000efMf3IAE"
+
+
+def test_salesforce_client_idempotency_patch(monkeypatch):
+    """Verify SalesforceClient checks existing Booking Form and updates via PATCH rather than creating duplicate."""
+    from po_validation.act.salesforce import SalesforceClient
+
+    client = SalesforceClient(instance_url="https://test.salesforce.com", access_token="tok", dry_run=False)
+
+    # Mock describe
+    monkeypatch.setattr(client, "describe", lambda sobj: {
+        "fields": [
+            {"name": "Opportunity__c", "createable": True},
+            {"name": "PO__c", "createable": True},
+            {"name": "Stage__c", "createable": True},
+        ]
+    })
+
+    # Mock query to return existing record
+    monkeypatch.setattr(client, "query", lambda soql: [
+        {"Id": "a1sEXISTING001", "Stage__c": "In Process by SOS"}
+    ])
+
+    recorded_calls = []
+    class MockResp:
+        status_code = 204
+        text = ""
+        def json(self): return {}
+
+    def mock_http(method, url, **kwargs):
+        recorded_calls.append((method, url, kwargs))
+        return MockResp()
+
+    from po_validation.act import salesforce
+    monkeypatch.setattr(salesforce, "_http_request", mock_http)
+
+    po = ParsedPO(
+        source_id="order.pdf",
+        po_number="PO-12345",
+        quote_number="F5Q-001122",
+        po_total=Decimal("100.00"),
+    )
+    quote = Quote(
+        quote_number="F5Q-001122",
+        opportunity_id="006Po00000efMf3IAE",
+        account_name="Acme Corp",
+        lines=[QuoteLine(part_number="SKU-1", total_price=Decimal("100.00"))],
+    )
+    res = ValidationResult(po=po, quote=quote)
+
+    result = client.create_booking_form(res)
+    assert result["success"] is True
+    assert result["booking_form_id"] == "a1sEXISTING001"
+    assert result.get("idempotent_updated") is True
+    assert len(recorded_calls) == 1
+    assert recorded_calls[0][0] == "PATCH"
+    assert "a1sEXISTING001" in recorded_calls[0][1]
+
