@@ -78,13 +78,32 @@ class ApprovalManager:
                 log.warning("Could not read %s: %s", item_path, e)
         return items
 
-    def get_po_details(self, po_num: str) -> dict[str, Any]:
-        """Load all artifacts for a specific PO across queues."""
-        stem = po_num.replace(" ", "_")
+    def _find_item_file(self, target: str, directory: Path) -> Optional[Path]:
+        """Find item file matching exact stem, item_key, or po_number."""
+        stem = target.replace(" ", "_")
+        direct = directory / f"{stem}_item.json"
+        if direct.exists():
+            return direct
+        # Look for composite key matches: {target}_*_item.json
+        for f in sorted(directory.glob(f"{stem}_*_item.json")):
+            return f
+        # Scan json contents for po_number == target or item_key == target
+        for f in sorted(directory.glob("*_item.json")):
+            try:
+                d = json.loads(f.read_text())
+                if d.get("item_key") == target or d.get("po_number") == target:
+                    return f
+            except Exception:
+                pass
+        return None
+
+    def get_po_details(self, target: str) -> dict[str, Any]:
+        """Load all artifacts for a specific PO or key across queues."""
         for q_dir in (self.approval_dir, self.review_dir, self.approved_dir):
-            item_file = q_dir / f"{stem}_item.json"
-            if item_file.exists():
+            item_file = self._find_item_file(target, q_dir)
+            if item_file and item_file.exists():
                 data = json.loads(item_file.read_text())
+                stem = item_file.stem.replace("_item", "")
                 brief_file = q_dir / f"{stem}_exception_brief.txt"
                 if brief_file.exists():
                     data["brief"] = brief_file.read_text()
@@ -92,31 +111,58 @@ class ApprovalManager:
                 if html_file.exists():
                     data["html_preview"] = html_file.read_text()
                 draft_file = self.reseller_dir / f"{stem}_draft_reseller_reply.txt"
+                if not draft_file.exists():
+                    base_po = stem.rsplit("_", 1)[0]
+                    draft_file = self.reseller_dir / f"{base_po}_draft_reseller_reply.txt"
                 if draft_file.exists():
                     data["reseller_draft"] = draft_file.read_text()
                 # Check for booking form payload
                 bf_file = Path("out/booking_forms") / f"{stem}_salesforce_booking_form.json"
+                if not bf_file.exists():
+                    base_po = stem.rsplit("_", 1)[0]
+                    bf_file = Path("out/booking_forms") / f"{base_po}_salesforce_booking_form.json"
                 if bf_file.exists():
                     data["booking_form"] = json.loads(bf_file.read_text())
                 return data
         return {}
 
-    def approve_order(self, po_num: str, approver_name: str = "SOS Specialist",
+    def approve_order(self, target: str, approver_name: str = "SOS Specialist",
                       notes: str = "Approved via local review queue") -> dict[str, Any]:
         """Approve a validated PO, submit to Salesforce, and move to approved/."""
-        stem = po_num.replace(" ", "_")
-        item_file = self.approval_dir / f"{stem}_item.json"
-        if not item_file.exists():
+        item_file = self._find_item_file(target, self.approval_dir)
+        if not item_file or not item_file.exists():
             return {
                 "success": False,
-                "error": f"PO '{po_num}' not found in sos_approval_queue."
+                "error": f"PO/Key '{target}' not found in sos_approval_queue."
             }
+
+        stem = item_file.stem.replace("_item", "")
+        item_data = json.loads(item_file.read_text())
+        po_num = item_data.get("po_number") or stem.rsplit("_", 1)[0]
 
         # Load booking form payload
         bf_file = Path("out/booking_forms") / f"{stem}_salesforce_booking_form.json"
+        if not bf_file.exists():
+            base_po = stem.rsplit("_", 1)[0]
+            alt_file = Path("out/booking_forms") / f"{base_po}_salesforce_booking_form.json"
+            if alt_file.exists():
+                bf_file = alt_file
+
         booking_payload = {}
         if bf_file.exists():
-            booking_payload = json.loads(bf_file.read_text())
+            try:
+                booking_payload = json.loads(bf_file.read_text())
+            except Exception:
+                booking_payload = {}
+
+        if not booking_payload:
+            if "booking_payload" in item_data:
+                booking_payload = item_data["booking_payload"]
+            else:
+                return {
+                    "success": False,
+                    "error": f"Booking form payload not found for '{target}'. Refusing approval without valid Booking Form."
+                }
 
         # Commit to Salesforce
         approval_time = datetime.now().isoformat()
@@ -144,6 +190,7 @@ class ApprovalManager:
 
         # Record approval manifest
         record = {
+            "item_key": stem,
             "po_number": po_num,
             "status": "APPROVED",
             "approved_by": approver_name,
@@ -156,7 +203,7 @@ class ApprovalManager:
         record_file = self.approved_dir / f"{stem}_approval_record.json"
         record_file.write_text(json.dumps(record, indent=2))
 
-        # Move item files from approval_dir to approved_dir
+        # Move all related item files from approval_dir to approved_dir
         for f in self.approval_dir.glob(f"{stem}_*"):
             dest = self.approved_dir / f.name
             f.rename(dest)
@@ -164,6 +211,7 @@ class ApprovalManager:
         return {
             "success": True,
             "po_number": po_num,
+            "item_key": stem,
             "salesforce_id": sf_result.get("salesforce_id"),
             "dry_run": self.sf.dry_run,
             "approved_at": approval_time,
@@ -181,6 +229,7 @@ def generate_dashboard_html(manager: ApprovalManager) -> str:
     approvals_rows = ""
     for a in approvals:
         po = html.escape(str(a.get("po_number") or "-"))
+        key = html.escape(str(a.get("item_key") or a.get("_po_stem") or po))
         quote = html.escape(str(a.get("quote_number") or "-"))
         source = html.escape(str(a.get("source_id", "").split("/")[-1]))
         approvals_rows += f"""
@@ -190,8 +239,8 @@ def generate_dashboard_html(manager: ApprovalManager) -> str:
             <td><code>{source}</code></td>
             <td><span class="badge badge-success">VALIDATED</span></td>
             <td style="text-align:right;">
-                <button class="btn btn-primary" onclick="approvePO('{po}')">⚡ 1-Click Approve</button>
-                <button class="btn btn-secondary" onclick="viewDetails('{po}')">View Details</button>
+                <button class="btn btn-primary" data-key="{key}" onclick="approvePO(this.dataset.key)">⚡ 1-Click Approve</button>
+                <button class="btn btn-secondary" data-key="{key}" onclick="viewDetails(this.dataset.key)">View Details</button>
             </td>
         </tr>
         """
@@ -201,6 +250,7 @@ def generate_dashboard_html(manager: ApprovalManager) -> str:
     reviews_rows = ""
     for r in reviews:
         po = html.escape(str(r.get("po_number") or "-"))
+        key = html.escape(str(r.get("item_key") or r.get("_po_stem") or po))
         quote = html.escape(str(r.get("quote_number") or "-"))
         outcome = html.escape(str(r.get("outcome") or "NEEDS_REVIEW"))
         failures = r.get("failures", [])
@@ -213,7 +263,7 @@ def generate_dashboard_html(manager: ApprovalManager) -> str:
             <td><span class="badge {badge_cls}">{outcome}</span></td>
             <td style="max-width:380px;font-size:12px;">{failure_summary}</td>
             <td style="text-align:right;">
-                <button class="btn btn-secondary" onclick="viewDetails('{po}')">Review Issues</button>
+                <button class="btn btn-secondary" data-key="{key}" onclick="viewDetails(this.dataset.key)">Review Issues</button>
             </td>
         </tr>
         """
@@ -330,13 +380,16 @@ def generate_dashboard_html(manager: ApprovalManager) -> str:
     </div>
 
     <script>
-        function approvePO(poNum) {{
-            if (!confirm("Approve purchase order " + poNum + " and commit Booking Form to Salesforce?")) return;
-            fetch('/api/approve/' + encodeURIComponent(poNum), {{ method: 'POST' }})
+        function approvePO(targetKey) {{
+            if (!confirm("Approve purchase order " + targetKey + " and commit Booking Form to Salesforce?")) return;
+            fetch('/api/approve/' + encodeURIComponent(targetKey), {{
+                method: 'POST',
+                headers: {{ 'X-Requested-With': 'XMLHttpRequest' }}
+            }})
                 .then(r => r.json())
                 .then(data => {{
                     if (data.success) {{
-                        alert("✅ PO " + poNum + " successfully approved!\\nSalesforce Booking Form ID: " + data.salesforce_id);
+                        alert("✅ PO " + (data.po_number || targetKey) + " successfully approved!\nSalesforce Booking Form ID: " + data.salesforce_id);
                         window.location.reload();
                     }} else {{
                         alert("❌ Approval failed: " + data.error);
@@ -345,11 +398,11 @@ def generate_dashboard_html(manager: ApprovalManager) -> str:
                 .catch(err => alert("Error: " + err));
         }}
 
-        function viewDetails(poNum) {{
-            fetch('/api/details/' + encodeURIComponent(poNum))
+        function viewDetails(targetKey) {{
+            fetch('/api/details/' + encodeURIComponent(targetKey))
                 .then(r => r.json())
                 .then(data => {{
-                    document.getElementById('modalTitle').innerText = "Details for PO #" + poNum;
+                    document.getElementById('modalTitle').innerText = "Details for " + (data.po_number || targetKey);
                     let html = "";
                     if (data.brief) {{
                         html += "<h4>Validation Brief</h4><pre>" + escapeHtml(data.brief) + "</pre>";
@@ -394,8 +447,8 @@ class SOSPortalHandler(http.server.SimpleHTTPRequestHandler):
             return
 
         if parsed.path.startswith("/api/details/"):
-            po_num = urllib.parse.unquote(parsed.path.replace("/api/details/", ""))
-            details = self.manager.get_po_details(po_num)
+            target = urllib.parse.unquote(parsed.path.replace("/api/details/", ""))
+            details = self.manager.get_po_details(target)
             resp = json.dumps(details).encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
@@ -407,10 +460,18 @@ class SOSPortalHandler(http.server.SimpleHTTPRequestHandler):
         self.send_error(404, "Not Found")
 
     def do_POST(self):
+        # Anti-CSRF Check: Reject cross-origin requests
+        origin = self.headers.get("Origin") or self.headers.get("Referer") or ""
+        if origin:
+            parsed_origin = urllib.parse.urlparse(origin)
+            if parsed_origin.hostname not in ("localhost", "127.0.0.1"):
+                self.send_error(403, "Forbidden: Cross-Origin Request Blocked")
+                return
+
         parsed = urllib.parse.urlparse(self.path)
         if parsed.path.startswith("/api/approve/"):
-            po_num = urllib.parse.unquote(parsed.path.replace("/api/approve/", ""))
-            result = self.manager.approve_order(po_num)
+            target = urllib.parse.unquote(parsed.path.replace("/api/approve/", ""))
+            result = self.manager.approve_order(target)
             resp = json.dumps(result).encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
@@ -424,8 +485,9 @@ class SOSPortalHandler(http.server.SimpleHTTPRequestHandler):
 
 def run_server(manager: ApprovalManager, port: int = 8080):
     SOSPortalHandler.manager = manager
-    with socketserver.TCPServer(("", port), SOSPortalHandler) as httpd:
-        print(f"\n🌐 SOS Order Review & Approval Portal running at http://localhost:{port}")
+    # Bind strictly to localhost (127.0.0.1) for local security
+    with socketserver.TCPServer(("127.0.0.1", port), SOSPortalHandler) as httpd:
+        print(f"\n🌐 SOS Order Review Portal running at http://127.0.0.1:{port} (bound to localhost only)")
         print("   Press Ctrl+C to stop.\n")
         try:
             httpd.serve_forever()

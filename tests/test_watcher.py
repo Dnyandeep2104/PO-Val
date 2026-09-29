@@ -43,9 +43,14 @@ def test_is_file_ready(tmp_path):
     text_file.write_bytes(b"Hello world this is not a pdf")
     assert not is_file_ready(text_file)
 
-    # 4. Valid PDF file
+    # 4. Incomplete/truncated PDF file (missing %%EOF)
+    truncated_pdf = tmp_path / "truncated.pdf"
+    truncated_pdf.write_bytes(b"%PDF-1.5 fake pdf content data that has not finished writing")
+    assert not is_file_ready(truncated_pdf, wait_sec=0.01, retries=1)
+
+    # 5. Valid PDF file (complete with %%EOF)
     valid_pdf = tmp_path / "valid.pdf"
-    valid_pdf.write_bytes(b"%PDF-1.5 fake pdf content data")
+    valid_pdf.write_bytes(b"%PDF-1.5 fake pdf content data\n%%EOF\n")
     assert is_file_ready(valid_pdf, wait_sec=0.01, retries=1)
 
 
@@ -75,7 +80,7 @@ def test_folder_watcher_scan(tmp_path):
 
     # Write a test PDF
     pdf_file = watch_dir / "order_123.pdf"
-    pdf_file.write_bytes(b"%PDF-1.4 test purchase order contents")
+    pdf_file.write_bytes(b"%PDF-1.4 test purchase order contents\n%%EOF\n")
 
     # Scan once
     results = watcher.scan_once()
@@ -108,7 +113,7 @@ def test_folder_watcher_deduplication(tmp_path):
     )
 
     pdf_file = watch_dir / "order_abc.pdf"
-    pdf_file.write_bytes(b"%PDF-1.4 unique purchase order contents")
+    pdf_file.write_bytes(b"%PDF-1.4 unique purchase order contents\n%%EOF\n")
 
     # First scan processes the file
     results = watcher.scan_once()
@@ -118,3 +123,101 @@ def test_folder_watcher_deduplication(tmp_path):
     results_second = watcher.scan_once()
     assert len(results_second) == 0
     assert pdf_file.exists()
+
+
+def test_folder_watcher_deferral_skips_during_window(tmp_path):
+    """Verify watcher delays re-processing DEFERRED documents until window expires."""
+    watch_dir = tmp_path / "watch_defer"
+    watch_dir.mkdir()
+
+    class DeferringEngine:
+        checklist = DummyChecklist()
+        calls = 0
+        def run(self, po, quote=None):
+            self.calls += 1
+            return ValidationResult(
+                po=po,
+                quote=None,
+                outcome=Outcome.DEFERRED,
+                checklist="dummy"
+            )
+
+    engine = DeferringEngine()
+    pipeline = Pipeline(source=None, engine=engine, ledger=JsonLedger(tmp_path / "ledger.jsonl"))
+    watcher = FolderWatcher(
+        watch_dir=watch_dir,
+        pipeline=pipeline,
+        deferral_delay=300.0,  # 5 minutes
+    )
+
+    pdf = watch_dir / "order_defer.pdf"
+    pdf.write_bytes(b"%PDF-1.4 deferral test contents\n%%EOF\n")
+
+    # First scan: processes once and sets deferral timestamp
+    res1 = watcher.scan_once()
+    assert len(res1) == 1
+    assert engine.calls == 1
+
+    # Second scan immediate: file is skipped because deferral window is active!
+    res2 = watcher.scan_once()
+    assert len(res2) == 0
+    assert engine.calls == 1  # Not called again!
+
+
+def test_folder_watcher_collision_avoidance(tmp_path):
+    """Verify watcher appends content hash to prevent overwriting existing files."""
+    watch_dir = tmp_path / "watch_col"
+    watch_dir.mkdir()
+    proc_dir = tmp_path / "proc_col"
+    proc_dir.mkdir()
+
+    # Create an existing file in processed_dir with the same name
+    existing = proc_dir / "order_same.pdf"
+    existing.write_bytes(b"existing file in destination")
+
+    engine = DummyEngine()
+    pipeline = Pipeline(source=None, engine=engine, ledger=JsonLedger(tmp_path / "ledger.jsonl"))
+    watcher = FolderWatcher(
+        watch_dir=watch_dir,
+        pipeline=pipeline,
+        processed_dir=proc_dir,
+    )
+
+    incoming = watch_dir / "order_same.pdf"
+    incoming.write_bytes(b"%PDF-1.4 new different order contents\n%%EOF\n")
+
+    results = watcher.scan_once()
+    assert len(results) == 1
+    assert not incoming.exists()
+    assert existing.read_bytes() == b"existing file in destination"
+    # Disambiguated file was created
+    matches = list(proc_dir.glob("order_same_*.pdf"))
+    assert len(matches) == 1
+
+
+def test_folder_watcher_unhandled_error_moves_to_failed(tmp_path):
+    """Verify unexpected processing error is caught and moves file to failed_dir."""
+    watch_dir = tmp_path / "watch_err"
+    watch_dir.mkdir()
+    failed_dir = tmp_path / "failed_err"
+    failed_dir.mkdir()
+
+    class CrashingPipeline:
+        ledger = JsonLedger(tmp_path / "ledger.jsonl")
+        def process_document(self, doc):
+            raise RuntimeError("Unexpected memory corruption in OCR")
+
+    watcher = FolderWatcher(
+        watch_dir=watch_dir,
+        pipeline=CrashingPipeline(),
+        failed_dir=failed_dir,
+    )
+
+    incoming = watch_dir / "corrupted.pdf"
+    incoming.write_bytes(b"%PDF-1.4 will trigger crash\n%%EOF\n")
+
+    results = watcher.scan_once()
+    assert len(results) == 0
+    assert not incoming.exists()
+    assert (failed_dir / "corrupted.pdf").exists()
+

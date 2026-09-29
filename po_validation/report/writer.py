@@ -227,20 +227,23 @@ class LocalQueueSink(Sink):
 
         po = result.po
         po_num = po.po_number or Path(po.source_id).stem.replace(" ", "_")
+        key_stem = f"{po_num}_{po.content_hash[:8]}" if po.content_hash else po_num
 
         # 1. Actionable Exception Brief (Text)
-        brief_file = self.queue_dir / f"{po_num}_exception_brief.txt"
+        brief_file = self.queue_dir / f"{key_stem}_exception_brief.txt"
         brief_file.write_text(render_text(result, verbose=True))
 
         # 2. Rich HTML email preview
         _, html_body, _ = render_email(result)
-        html_file = self.queue_dir / f"{po_num}_review.html"
+        html_file = self.queue_dir / f"{key_stem}_review.html"
         html_file.write_text(html_body)
 
         # 3. Machine-readable JSON summary for dashboards / approval tools
-        meta_file = self.queue_dir / f"{po_num}_item.json"
+        meta_file = self.queue_dir / f"{key_stem}_item.json"
         item_data = {
+            "item_key": key_stem,
             "po_number": po.po_number,
+            "content_hash": po.content_hash,
             "quote_number": po.quote_number,
             "source_id": po.source_id,
             "outcome": result.outcome.value,
@@ -257,7 +260,7 @@ class LocalQueueSink(Sink):
         # 4. If in reseller_response_queue, write pre-drafted reply email
         if self.queue_name == "reseller_response_queue":
             draft = render_reseller_response_email(result)
-            draft_file = self.queue_dir / f"{po_num}_draft_reseller_reply.txt"
+            draft_file = self.queue_dir / f"{key_stem}_draft_reseller_reply.txt"
             draft_file.write_text(draft)
 
 

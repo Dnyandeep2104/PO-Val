@@ -81,21 +81,33 @@ def write_booking_artifacts(res, bf_dir: Path, ai_client: F5AIClient) -> None:
         notes=note_titles,
     )
 
+    key_stem = f"{po_num}_{result.po.content_hash[:8]}" if result.po.content_hash else po_num
+
     # 1. Salesforce Booking_Form__c REST API Payload
     sf_payload = form.to_salesforce_payload()
-    (bf_dir / f"{po_num}_salesforce_booking_form.json").write_text(
+    (bf_dir / f"{key_stem}_salesforce_booking_form.json").write_text(
         json.dumps(sf_payload, indent=2)
     )
+    if key_stem != po_num:
+        (bf_dir / f"{po_num}_salesforce_booking_form.json").write_text(
+            json.dumps(sf_payload, indent=2)
+        )
 
     # 2. Outlook Actionable Adaptive Card (JSON)
     card = render_adaptive_card(form, summary)
-    (bf_dir / f"{po_num}_outlook_card.json").write_text(
+    (bf_dir / f"{key_stem}_outlook_card.json").write_text(
         json.dumps(card, indent=2)
     )
+    if key_stem != po_num:
+        (bf_dir / f"{po_num}_outlook_card.json").write_text(
+            json.dumps(card, indent=2)
+        )
 
     # 3. Outlook HTML Email Preview
     html = render_html_email_preview(form, summary)
-    (bf_dir / f"{po_num}_email_preview.html").write_text(html)
+    (bf_dir / f"{key_stem}_email_preview.html").write_text(html)
+    if key_stem != po_num:
+        (bf_dir / f"{po_num}_email_preview.html").write_text(html)
 
 
 

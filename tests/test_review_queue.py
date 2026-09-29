@@ -21,6 +21,11 @@ def test_approval_manager_lifecycle(tmp_path):
         "failures": [],
         "routed_at": "2026-09-28T12:00:00",
         "ready_for_approval": True,
+        "booking_payload": {
+            "Opportunity__c": "006Test000001XYZ",
+            "Total_Amount__c": 50000.0,
+            "End_User_Account_Name__c": "Test Corp"
+        }
     }
     item_file = approval_dir / "PO-999888_item.json"
     item_file.write_text(json.dumps(item_data))
@@ -59,6 +64,25 @@ def test_approval_manager_lifecycle(tmp_path):
 
     # 6. Approvals list should now be empty
     assert len(manager.list_pending_approvals()) == 0
+
+
+def test_approve_order_refuses_when_missing_payload(tmp_path):
+    """Verify approval is refused if booking form payload does not exist."""
+    queue_base = tmp_path / "queues"
+    approval_dir = queue_base / "sos_approval_queue"
+    approval_dir.mkdir(parents=True)
+
+    item_data = {
+        "po_number": "PO-NO-PAYLOAD",
+        "ready_for_approval": True,
+    }
+    (approval_dir / "PO-NO-PAYLOAD_item.json").write_text(json.dumps(item_data))
+
+    manager = ApprovalManager(queue_dir=queue_base, salesforce_client=SalesforceClient(dry_run=True))
+    res = manager.approve_order("PO-NO-PAYLOAD")
+    assert res["success"] is False
+    assert "Refusing approval without valid Booking Form" in res["error"]
+
 
 
 def test_generate_dashboard_html(tmp_path):

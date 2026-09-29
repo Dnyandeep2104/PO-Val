@@ -28,6 +28,12 @@ def test_render_reseller_response_email():
             status=Status.FAIL,
             severity=Severity.BLOCKER,
             message="Part SKU-ABC: PO unit price $500 does not match quote $400",
+        ),
+        Finding(
+            rule_id="parser_confidence",
+            status=Status.FAIL,
+            severity=Severity.BLOCKER,
+            message="Parser confidence 0.4 below threshold 0.85",
         )
     ]
     result = ValidationResult(
@@ -42,8 +48,10 @@ def test_render_reseller_response_email():
     assert "PO-778899" in draft
     assert "F5Q-123456" in draft
     assert "SKU-ABC" in draft
-    assert "CARAHSOFT Team" in draft or "Carahsoft" in draft
+    assert "Carahsoft" in draft
     assert "Required Next Steps:" in draft
+    assert "[BLOCKER]" not in draft
+    assert "Parser confidence" not in draft
 
 
 def test_local_queue_sink_and_exception_router(tmp_path):

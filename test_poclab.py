@@ -149,6 +149,20 @@ def main():
 
     # For live writes, verify Opportunity ID exists in sandbox and satisfies validation rules
     if not dry_run:
+        # Hard Production Safety Guard: REFUSE to run live tests against production
+        try:
+            org_rows = client.query("SELECT Id, Name, IsSandbox FROM Organization LIMIT 1")
+            if not org_rows or not org_rows[0].get("IsSandbox"):
+                print("\n🛑 SAFETY CRITICAL: Connected Salesforce instance is NOT a Sandbox!")
+                print("   test_poclab.py is a test harness and is strictly prohibited from running against Production.")
+                print("   Aborting immediately with no changes made.\n")
+                return 1
+            print(f"🔒 Sandbox guard verified: Connected to '{org_rows[0].get('Name')}' (IsSandbox=True)")
+        except Exception as exc:
+            print(f"\n🛑 SAFETY CRITICAL: Could not verify Organization.IsSandbox: {exc}")
+            print("   Aborting live execution for safety.\n")
+            return 1
+
         from decimal import Decimal
         from po_validation.models import Quote
 

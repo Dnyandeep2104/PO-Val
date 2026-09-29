@@ -25,6 +25,7 @@ from __future__ import annotations
 import html
 import json
 import logging
+import re
 from typing import Optional
 
 from ..models import Outcome, Status, ValidationResult
@@ -145,6 +146,20 @@ data was unavailable rather than anything wrong with the PO.</p>
     return subject, body, plain
 
 
+INTERNAL_RULE_PREFIXES = ("parser_", "confidence_", "arithmetic_", "diagnostics_", "ocr_")
+
+
+def _sanitize_for_reseller(msg: str) -> str:
+    """Clean internal jargon, system names, and technical tokens from reseller-facing text."""
+    cleaned = msg
+    # Strip internal severity labels
+    cleaned = re.sub(r"^\[(?:BLOCKER|MAJOR|MINOR|INFO)\]\s*", "", cleaned)
+    # Replace internal data source names
+    cleaned = re.sub(r"does not exist in (?:stub|snowflake|sfdc)", "could not be located in F5 records", cleaned, flags=re.I)
+    cleaned = re.sub(r"\bstub\b", "F5 system records", cleaned, flags=re.I)
+    return cleaned.strip()
+
+
 def render_reseller_response_email(result: ValidationResult) -> str:
     """Draft a professional, ready-to-send discrepancy email to the reseller/distributor."""
     po = result.po
@@ -165,7 +180,11 @@ def render_reseller_response_email(result: ValidationResult) -> str:
 
     bullets = []
     for f in failed_checks:
-        bullets.append(f"  • [{f.severity.value}] {f.message}")
+        # Filter out internal engine/parser diagnostic rules that are not reseller issues
+        if any(f.rule_id.lower().startswith(p) for p in INTERNAL_RULE_PREFIXES):
+            continue
+        clean_msg = _sanitize_for_reseller(f.message)
+        bullets.append(f"  • {clean_msg}")
 
     issues_text = "\n".join(bullets) if bullets else "  • Order details do not reconcile with the referenced quote."
     to_line = f"To: {recipient_email}\n" if recipient_email else ""

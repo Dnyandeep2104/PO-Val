@@ -219,29 +219,57 @@ class BookingFormBuilder:
                 body=body
             ))
         elif form.distributor == "NA - Carahsoft" or (po.layout or "").lower() == "carahsoft":
-            # Extract Carahsoft carrier account note matching F5 standard (Carlos Lopez BF-00562056)
-            poc_m = re.search(r"POC:\s*([A-Za-z\s]+)", po.raw_text)
-            poc_name = poc_m.group(1).strip() if poc_m else "Nicolas Chilton"
-            emails = re.findall(r"[\w\.-]+@carahsoft\.com", po.raw_text, re.I) or ["Nicolas.Chilton@Carahsoft.com"]
-            poc_email = emails[0]
-            phones = re.findall(r"\(?\d{3}\)?[\s\.-]\d{3}[\s\.-]\d{4}", po.raw_text)
-            poc_phone = phones[-1] if phones else "703 581 6658"
+            # Extract Carahsoft carrier account note dynamically from PO text without fake fallbacks
+            poc_m = re.search(r"POC:\s*([A-Za-z\s]+?)(?:\s*\(|\s*\d|\s*\n|$)", po.raw_text)
+            poc_name = poc_m.group(1).strip() if poc_m else ""
+            if not poc_name:
+                for r in ("ship_to", "bill_to"):
+                    pty = po.party(r)
+                    if pty and pty.get("contact_name"):
+                        poc_name = pty["contact_name"]
+                        break
 
-            body = (
-                "Carrier Account Information:\n\n"
-                "Carahsoft\n"
-                "11493 Sunset Hills Road, Suite 100\n"
-                "Reston, VA 20190 USA\n\n"
-                f"Carrier: {po.carriers[0] if po.carriers else 'UPS'}\n"
-                "Method: Ground\n"
-                f"Account #: {po.carrier_account or 'A8C902'}\n\n"
-                f"{poc_name}\n"
-                f"{poc_email}\n"
-                f"{poc_phone}"
-            )
+            email_m = re.search(r"[\w\.-]+@carahsoft\.com", po.raw_text, re.I)
+            poc_email = email_m.group(0) if email_m else ""
+
+            poc_phone = ""
+            idx = po.raw_text.find("POC:")
+            if idx != -1:
+                sub = po.raw_text[idx:idx+200]
+                pm = re.search(r"\(?\d{3}\)?[\s\.-]\d{3}[\s\.-]\d{4}", sub)
+                if pm:
+                    poc_phone = pm.group(0)
+
+            bill_to = po.party("bill_to")
+            addr_clean = []
+            if bill_to:
+                for l in bill_to.get("lines", []):
+                    if re.search(r"^(purchase|vendor|order|po\b|fein|this\s*order|f5\b)", l, re.I):
+                        if addr_clean:
+                            break
+                        continue
+                    addr_clean.append(l)
+            addr_lines = "\n".join(addr_clean)
+
+            carrier_name = po.carriers[0] if po.carriers else "Carrier"
+            acct_num = po.carrier_account or "Not specified on PO"
+
+            body_lines = ["Carrier Account Information:\n"]
+            if addr_lines:
+                body_lines.append(addr_lines)
+                body_lines.append("")
+            body_lines.append(f"Carrier: {carrier_name}")
+            body_lines.append("Method: Ground")
+            body_lines.append(f"Account #: {acct_num}")
+
+            contacts = [c for c in [poc_name, poc_email, poc_phone] if c]
+            if contacts:
+                body_lines.append("")
+                body_lines.extend(contacts)
+
             form.notes.append(BookingNote(
                 title="Note to RO - Carrier Info",
-                body=body
+                body="\n".join(body_lines).strip()
             ))
         elif po.carriers or po.carrier_account:
             carrier_str = ", ".join(po.carriers) if po.carriers else "Carrier"

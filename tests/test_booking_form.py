@@ -166,3 +166,27 @@ def test_outlook_card_rendering():
     assert "PO #PO706839" in html
     assert "Dell USA LP." in html
     assert "$73,444.80" in html
+
+
+def test_carahsoft_no_carrier_account_does_not_hallucinate_fake_fallbacks():
+    """Verify that a Carahsoft PO without carrier details does not invent A8C902 or Nicolas Chilton."""
+    po = ParsedPO(
+        source_id="blank_carahsoft.pdf",
+        po_number="12345678",
+        po_total=Decimal("1000.00"),
+        layout="carahsoft",
+        raw_text="Carahsoft Technology Corp PO 12345678",
+        carriers=[],
+        carrier_account=None,
+        parties=[
+            {"role": "bill_to", "name": "Carahsoft Technology Corp", "lines": ["Carahsoft Technology Corp", "11493 Sunset Hills Road", "Reston, VA 20190"]}
+        ]
+    )
+    res = ValidationResult(po=po, quote=None)
+    form = BookingFormBuilder.build(res)
+    carrier_notes = [n for n in form.notes if "Carrier" in n.title]
+    assert len(carrier_notes) == 1
+    body = carrier_notes[0].body
+    assert "A8C902" not in body
+    assert "Nicolas Chilton" not in body
+    assert "Account #: Not specified on PO" in body
