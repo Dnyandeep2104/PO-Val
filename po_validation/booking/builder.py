@@ -73,7 +73,7 @@ class BookingForm:
             "Stage__c": self.stage,
             "Perpetual_Order_Status__c": self.order_status,
             "Perpetual_Order_Integration_Status__c": self.integration_status,
-            "Distributor__c": self.distributor,
+            "Distributor__c": self.distributor if self.distributor != "None" else None,
             "Reseller_Name__c": self.reseller_name,
             "Account_Name__c": self.account_name,
             "Discount_Schedule__c": self.discount_schedule,
@@ -153,8 +153,11 @@ class BookingFormBuilder:
         # 4. Resolve Technical / Notification Contacts
         # Pull from Quote Opportunity owner / Sales Rep if resolved
         rep_email = getattr(q, "owner_email", None) or getattr(q, "sales_rep_email", None)
-        if not rep_email and distributor in ("NA - Synnex", "NA - Carahsoft"):
-            rep_email = os.environ.get("F5_DISTI_TEAM_EMAIL", "distiteam@f5.com")
+        if not rep_email:
+            if distributor in ("NA - Synnex", "NA - Carahsoft"):
+                rep_email = os.environ.get("F5_DISTI_TEAM_EMAIL", "distiteam@f5.com")
+            else:
+                rep_email = os.environ.get("F5_SOS_INBOX", "purchaseorders@f5.com")
 
         reg_email = None
         ship_party = po.party("ship_to")

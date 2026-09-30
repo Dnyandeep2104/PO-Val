@@ -346,9 +346,16 @@ class SalesforceClient:
         notes = payload.pop("AttachedContentNotes", [])
 
         if not form.opportunity_id:
-            return {"attempted": False,
-                    "reason": "No opportunity id resolved from the quote.",
-                    "payload": payload}
+            return {
+                "attempted": False,
+                "success": False,
+                "reason": "No opportunity id resolved from the quote.",
+                "status_code": "NO_OPP_ID",
+                "errors": [{"code": "NO_OPPORTUNITY_ID",
+                            "message": "No opportunity id resolved from the quote.",
+                            "fields": ["Opportunity__c"]}],
+                "payload": payload,
+            }
 
         if self.dry_run:
             mock_id = f"a1sPOCLAB_MOCK_{form.po_number or 'DRAFT'}"
@@ -406,9 +413,13 @@ class SalesforceClient:
                         json_data=clean_payload,
                         timeout=30
                     )
+                    upd_body = _safe_json(upd_resp)
+                    upd_errors = upd_body if isinstance(upd_body, list) else [upd_body]
+                    is_ok = upd_resp.status_code in (200, 204)
                     return {
                         "attempted": True,
-                        "success": upd_resp.status_code in (200, 204),
+                        "success": is_ok,
+                        "status_code": upd_resp.status_code,
                         "booking_form_id": rec_id,
                         "idempotent_updated": True,
                         "url": f"{self.instance_url}/lightning/r/Booking_Form__c/{rec_id}/view",
@@ -416,6 +427,11 @@ class SalesforceClient:
                         "dropped_fields": dropped_fields,
                         "payload": payload,
                         "written_payload": clean_payload,
+                        "raw_response": upd_resp.text,
+                        "errors": [{"code": e.get("errorCode") if isinstance(e, dict) else "ERROR",
+                                    "message": e.get("message") if isinstance(e, dict) else str(e),
+                                    "fields": e.get("fields") if isinstance(e, dict) else []}
+                                   for e in upd_errors if e] if not is_ok else [],
                     }
             except Exception as idemp_exc:
                 log.warning("Idempotency lookup failed: %s", idemp_exc)
@@ -460,6 +476,7 @@ class SalesforceClient:
             return {
                 "attempted": True,
                 "success": True,
+                "status_code": r.status_code,
                 "booking_form_id": rec_id,
                 "url": f"{self.instance_url}/lightning/r/Booking_Form__c/{rec_id}/view",
                 "notes_attached": notes_created,
@@ -473,12 +490,13 @@ class SalesforceClient:
             "attempted": True,
             "success": False,
             "status_code": r.status_code,
-            "errors": [{"code": e.get("errorCode"),
-                        "message": e.get("message"),
-                        "fields": e.get("fields")} for e in errors],
+            "errors": [{"code": e.get("errorCode") if isinstance(e, dict) else "ERROR",
+                        "message": e.get("message") if isinstance(e, dict) else str(e),
+                        "fields": e.get("fields") if isinstance(e, dict) else []} for e in errors if e],
             "dropped_fields": dropped_fields,
             "payload": payload,
             "written_payload": clean_payload,
+            "raw_response": r.text,
         }
 
 

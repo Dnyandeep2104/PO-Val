@@ -10,11 +10,12 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 import time
-from typing import Callable, Optional
+from typing import Callable, Optional, TYPE_CHECKING
 from datetime import datetime
 
 from .sources import Document
-from ..pipeline import Pipeline
+if TYPE_CHECKING:
+    from ..pipeline import Pipeline
 from ..models import ValidationResult
 
 log = logging.getLogger(__name__)

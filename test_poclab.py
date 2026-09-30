@@ -282,7 +282,12 @@ def main():
                 print(f"   Notes Attached   : {action.get('notes_attached')} Note(s) to RO")
             else:
                 print(f"   Status           : ❌ ERROR ({action.get('status_code')})")
-                print(f"   Errors           : {json.dumps(action.get('errors'), indent=2)}")
+                if action.get("reason"):
+                    print(f"   Reason           : {action.get('reason')}")
+                if action.get("errors"):
+                    print(f"   Errors           : {json.dumps(action.get('errors'), indent=2)}")
+                if action.get("raw_response"):
+                    print(f"   Raw Response     : {action.get('raw_response')}")
 
     print("-" * 70)
     print(f"\n🎉 Completed test for {len(target_results)} purchase order(s).")
