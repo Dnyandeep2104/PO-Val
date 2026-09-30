@@ -20,6 +20,7 @@ so a wrong guess degrades a rule to SKIP rather than crashing the run.
 from __future__ import annotations
 
 import logging
+import os
 from typing import Any, Optional
 
 from ..models import Quote, QuoteLine
@@ -27,8 +28,8 @@ from .base import QuoteSource
 
 log = logging.getLogger(__name__)
 
-QUOTE_TABLE = "PRD_ENT_RAW.SALESFORCE.CAFSL_ORACLE_QUOTE_C"
-LINE_TABLE = "PRD_ENT_RAW.SALESFORCE.CAFSL_ORACLE_QUOTE_LINE_ITEM_C"
+QUOTE_TABLE = os.environ.get("SNOWFLAKE_QUOTE_TABLE", "PRD_ENT_RAW.SALESFORCE.CAFSL_ORACLE_QUOTE_C")
+LINE_TABLE = os.environ.get("SNOWFLAKE_LINE_TABLE", "PRD_ENT_RAW.SALESFORCE.CAFSL_ORACLE_QUOTE_LINE_ITEM_C")
 
 # logical name -> (alias, column). CONFIRMED entries came from the
 # prototype's working query. UNVERIFIED entries are conventional guesses.

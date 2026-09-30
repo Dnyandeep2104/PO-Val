@@ -6,6 +6,7 @@ Salesforce record payload used by F5 SOS (Revenue Operations / Booking).
 
 from __future__ import annotations
 
+import os
 import re
 from dataclasses import dataclass, field
 from decimal import Decimal
@@ -153,7 +154,7 @@ class BookingFormBuilder:
         # Pull from Quote Opportunity owner / Sales Rep if resolved
         rep_email = getattr(q, "owner_email", None) or getattr(q, "sales_rep_email", None)
         if not rep_email and distributor in ("NA - Synnex", "NA - Carahsoft"):
-            rep_email = "distiteam@f5.com"
+            rep_email = os.environ.get("F5_DISTI_TEAM_EMAIL", "distiteam@f5.com")
 
         reg_email = None
         ship_party = po.party("ship_to")
@@ -217,7 +218,8 @@ class BookingFormBuilder:
         if freight_lines:
             # Freight pass-through charge on PO
             lines_desc = ", ".join(f"Line {li.line_no or 'extra'}" for li in freight_lines)
-            body = f"Shipping Via F5's FedEx account. See additional charge on {lines_desc}"
+            carrier = os.environ.get("F5_FREIGHT_CARRIER", "FedEx")
+            body = f"Shipping Via F5's {carrier} account. See additional charge on {lines_desc}"
             form.notes.append(BookingNote(
                 title="Note to RO: Carrier Information",
                 body=body

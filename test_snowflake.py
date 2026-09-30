@@ -58,8 +58,11 @@ def get_snowflake_connection(user: Optional[str] = None):
         print("    .venv/bin/pip install snowflake-connector-python\n")
         sys.exit(1)
 
-    load_env_file()
-    sf_user = user or os.environ.get("SNOWFLAKE_USER") or "d.dhok@f5.com"
+    sf_user = user or os.environ.get("SNOWFLAKE_USER")
+    if not sf_user:
+        print("\n❌ No Snowflake user provided.")
+        print("Please specify --user <email> or set SNOWFLAKE_USER in .env\n")
+        sys.exit(1)
     account = os.environ.get("SNOWFLAKE_ACCOUNT", DEFAULT_ACCOUNT)
     warehouse = os.environ.get("SNOWFLAKE_WAREHOUSE", DEFAULT_WAREHOUSE)
     role = os.environ.get("SNOWFLAKE_ROLE", DEFAULT_ROLE)
@@ -363,9 +366,9 @@ def main():
     load_env_file()
     parser = argparse.ArgumentParser(description="Validate POs against live Snowflake replica")
     parser.add_argument("--check", action="store_true", help="Test Snowflake connection and list quote tables")
-    parser.add_argument("--user", type=str, default="d.dhok@f5.com", help="Snowflake SSO user email")
+    parser.add_argument("--user", type=str, default=os.environ.get("SNOWFLAKE_USER"), help="Snowflake SSO user email")
     parser.add_argument("--quote", type=str, help="Fetch and inspect a single Quote from Snowflake")
-    parser.add_argument("--po", type=str, default="PO706839", help="PO number to validate against Snowflake")
+    parser.add_argument("--po", type=str, default=None, help="PO number to validate against Snowflake")
     parser.add_argument("--live", action="store_true", help="Post to Salesforce sandbox if validation succeeds")
 
     args = parser.parse_args()

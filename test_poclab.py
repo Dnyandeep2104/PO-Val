@@ -41,8 +41,8 @@ def main():
     ap = argparse.ArgumentParser(description="Test harness for F5 Salesforce Sandbox")
     default_url = os.environ.get("SF_INSTANCE_URL", "https://f5--poclab.sandbox.my.salesforce.com")
     default_token = os.environ.get("SF_ACCESS_TOKEN")
-    default_username = os.environ.get("SF_USERNAME", "d.dhok@f5.com.poclab" if "poclab" in default_url else "d.dhok@f5.com.e2e")
-    default_security_token = os.environ.get("SF_SECURITY_TOKEN", "BEKOe68BCxwhzOEtvYcdWVzf")
+    default_username = os.environ.get("SF_USERNAME", "")
+    default_security_token = os.environ.get("SF_SECURITY_TOKEN", "")
 
     ap.add_argument("--url", default=default_url, help="Sandbox instance URL")
     ap.add_argument("--token", default=default_token, help="Salesforce Sandbox OAuth Bearer Token (Session ID, starts with 00D...)")
@@ -247,7 +247,7 @@ def main():
                     res.quote.opportunity_id = real_opp_id
                 else:
                     res.quote = Quote(
-                        quote_number=res.po.quote_number or "F5Q-01062638",
+                        quote_number=res.po.quote_number or "UNKNOWN_QUOTE",
                         total=res.po.po_total or Decimal("0"),
                         opportunity_id=real_opp_id,
                         is_final=True

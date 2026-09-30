@@ -25,6 +25,7 @@ from __future__ import annotations
 import html
 import json
 import logging
+import os
 import re
 from typing import Optional
 
@@ -188,6 +189,7 @@ def render_reseller_response_email(result: ValidationResult) -> str:
 
     issues_text = "\n".join(bullets) if bullets else "  • Order details do not reconcile with the referenced quote."
     to_line = f"To: {recipient_email}\n" if recipient_email else ""
+    inbox_email = os.environ.get("F5_SOS_INBOX", "purchaseorders@f5.com")
 
     return f"""{to_line}Subject: Action Required: Purchase Order #{po_num} Discrepancy (Quote #{quote_num})
 
@@ -202,13 +204,13 @@ During our automated purchase order validation, the following issue(s) were iden
 Required Next Steps:
 1. Please review the referenced quote #{quote_num}.
 2. Issue an amended purchase order addressing the discrepancy noted above.
-3. Reply to this email or send the updated PO directly to purchaseorders@f5.com.
+3. Reply to this email or send the updated PO directly to {inbox_email}.
 
 If you have questions regarding the quote pricing, terms, or configuration, please contact your dedicated F5 Account Representative.
 
 Best regards,
 F5 Sales Operations (SOS)
-purchaseorders@f5.com
+{inbox_email}
 """
 
 
