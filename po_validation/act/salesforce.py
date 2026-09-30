@@ -377,6 +377,7 @@ class SalesforceClient:
         try:
             d = self.describe("Booking_Form__c")
             valid_createable = {f["name"] for f in d.get("fields", []) if f.get("createable", False)}
+            valid_updateable = {f["name"] for f in d.get("fields", []) if f.get("updateable", False)}
             clean_payload = {k: v for k, v in payload.items() if k in valid_createable and v is not None}
             dropped_fields = [k for k in payload if k not in valid_createable]
             if dropped_fields:
@@ -386,6 +387,7 @@ class SalesforceClient:
         except Exception as exc:
             log.warning("Could not describe Booking_Form__c schema: %s", exc)
             clean_payload = {k: v for k, v in payload.items() if v is not None}
+            valid_updateable = set(clean_payload.keys())
         # Idempotency Check (#13): Check if a Booking Form already exists for this Opportunity + PO
         if not self.dry_run and form.opportunity_id and form.po_number:
             try:
@@ -406,11 +408,12 @@ class SalesforceClient:
                         "for Opp %s and PO %s. Updating record rather than creating duplicate.",
                         rec_id, rec_stage, form.opportunity_id, form.po_number
                     )
+                    patch_payload = {k: v for k, v in clean_payload.items() if k in valid_updateable}
                     upd_resp = _http_request(
                         "PATCH",
                         self._url(f"sobjects/Booking_Form__c/{rec_id}"),
                         headers=self.headers,
-                        json_data=clean_payload,
+                        json_data=patch_payload,
                         timeout=30
                     )
                     upd_body = _safe_json(upd_resp)
@@ -426,7 +429,7 @@ class SalesforceClient:
                         "notes_attached": 0,
                         "dropped_fields": dropped_fields,
                         "payload": payload,
-                        "written_payload": clean_payload,
+                        "written_payload": patch_payload,
                         "raw_response": upd_resp.text,
                         "errors": [{"code": e.get("errorCode") if isinstance(e, dict) else "ERROR",
                                     "message": e.get("message") if isinstance(e, dict) else str(e),

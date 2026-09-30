@@ -276,7 +276,10 @@ def main():
             print(f"   Notes Prepared   : {action.get('notes_count', 0)} Note(s) to RO")
         else:
             if action.get("success"):
-                print(f"   Status           : ✅ CREATED IN POCLAB!")
+                if action.get("idempotent_updated"):
+                    print(f"   Status           : 🔁 UPDATED EXISTING RECORD (Idempotency)")
+                else:
+                    print(f"   Status           : ✅ CREATED IN POCLAB!")
                 print(f"   Record ID        : {action.get('booking_form_id')}")
                 print(f"   Lightning View   : {action.get('url')}")
                 print(f"   Notes Attached   : {action.get('notes_attached')} Note(s) to RO")
