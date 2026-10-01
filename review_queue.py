@@ -446,6 +446,11 @@ class SOSPortalHandler(http.server.SimpleHTTPRequestHandler):
             self.wfile.write(content)
             return
 
+        if parsed.path == "/favicon.ico":
+            self.send_response(204)
+            self.end_headers()
+            return
+
         if parsed.path.startswith("/api/details/"):
             target = urllib.parse.unquote(parsed.path.replace("/api/details/", ""))
             details = self.manager.get_po_details(target)
