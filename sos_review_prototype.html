@@ -1,0 +1,969 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>SOS order review (prototype)</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Public+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#F3F5F7; --surface:#FFFFFF; --surface-2:#F8FAFB; --ink:#17202A; --muted:#5B6674;
+  --line:#DCE1E7; --line-strong:#C3CBD4; --brand:#D3122C;
+  --action:#17202A; --action-ink:#FFFFFF; --action-hover:#2B3744;
+  --ok:#1D7A4C; --ok-bg:#E6F3EB; --warn:#8F5500; --warn-bg:#FBF0DA;
+  --bad:#B42318; --bad-bg:#FBE9E7; --info:#2B5799; --info-bg:#E7EEF8; --focus:#2B5799;
+  --shadow:0 12px 40px rgba(17,26,36,.18);
+  color-scheme:light;
+  box-sizing:border-box;
+  padding-top:env(safe-area-inset-top,0px);
+  padding-bottom:env(safe-area-inset-bottom,0px);
+}
+@media (prefers-color-scheme:dark){
+  :root:not([data-theme="light"]){
+    --bg:#0E1318; --surface:#151C23; --surface-2:#1A232C; --ink:#E5EAEF; --muted:#98A4B1;
+    --line:#26303B; --line-strong:#35424F; --brand:#FF3A50;
+    --action:#E5EAEF; --action-ink:#0E1318; --action-hover:#C9D2DB;
+    --ok:#52C48C; --ok-bg:#122B1E; --warn:#E9A642; --warn-bg:#30240E;
+    --bad:#F47A6E; --bad-bg:#371614; --info:#86AEF2; --info-bg:#15233A; --focus:#86AEF2;
+    --shadow:0 12px 40px rgba(0,0,0,.5); color-scheme:dark;
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#0E1318; --surface:#151C23; --surface-2:#1A232C; --ink:#E5EAEF; --muted:#98A4B1;
+  --line:#26303B; --line-strong:#35424F; --brand:#FF3A50;
+  --action:#E5EAEF; --action-ink:#0E1318; --action-hover:#C9D2DB;
+  --ok:#52C48C; --ok-bg:#122B1E; --warn:#E9A642; --warn-bg:#30240E;
+  --bad:#F47A6E; --bad-bg:#371614; --info:#86AEF2; --info-bg:#15233A; --focus:#86AEF2;
+  --shadow:0 12px 40px rgba(0,0,0,.5); color-scheme:dark;
+}
+html{scroll-padding-top:calc(env(safe-area-inset-top,0px) + 72px)}
+*,*::before,*::after{box-sizing:inherit}
+body{margin:0;background:var(--bg);color:var(--ink);
+  font:15px/1.5 "Public Sans",system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
+  font-variant-numeric:tabular-nums;-webkit-font-smoothing:antialiased}
+button,input,select,textarea{font:inherit;color:inherit}
+:focus-visible{outline:2px solid var(--focus);outline-offset:2px;border-radius:6px}
+.sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
+
+/* top bar */
+.top{position:sticky;top:env(safe-area-inset-top,0px);z-index:20;background:var(--surface);border-bottom:1px solid var(--line)}
+.top-in{max-width:1200px;margin:0 auto;padding:12px 20px;display:flex;align-items:center;gap:16px}
+.brand{display:flex;align-items:center;gap:12px;min-width:0}
+.brand-rule{width:4px;height:30px;border-radius:2px;background:var(--brand);flex:none}
+.brand-org{font-size:12.5px;color:var(--muted);line-height:1.2}
+.brand-name{font-size:16px;font-weight:700;line-height:1.2}
+.top-right{margin-left:auto;display:flex;align-items:center;gap:10px;flex-wrap:wrap;justify-content:flex-end}
+.proto{font-size:12.5px;color:var(--warn);background:var(--warn-bg);padding:4px 10px;border-radius:999px;white-space:nowrap}
+
+/* buttons */
+.btn{appearance:none;border:1px solid var(--line-strong);background:var(--surface);color:var(--ink);
+  padding:8px 14px;border-radius:8px;font-weight:600;font-size:14px;cursor:pointer;line-height:1.2;
+  display:inline-flex;align-items:center;gap:8px;white-space:nowrap}
+.btn:hover{background:var(--surface-2)}
+.btn-primary{background:var(--action);color:var(--action-ink);border-color:var(--action)}
+.btn-primary:hover{background:var(--action-hover);border-color:var(--action-hover)}
+.btn[disabled]{opacity:.45;cursor:not-allowed}
+.btn-small{padding:5px 10px;font-size:13px}
+.btn-ghost{border-color:transparent;background:transparent}
+.btn-ghost:hover{background:var(--surface-2)}
+.linkish{appearance:none;background:none;border:0;padding:0;color:var(--info);font-weight:600;cursor:pointer}
+.linkish:hover{text-decoration:underline}
+
+/* layout */
+.wrap{max-width:1200px;margin:0 auto;padding:28px 20px 72px}
+h1{font-size:26px;line-height:1.2;margin:0 0 6px;letter-spacing:-.01em}
+h2{font-size:17px;line-height:1.3;margin:0}
+h3{font-size:15px;margin:0}
+.lede{color:var(--muted);margin:0;max-width:72ch}
+.lede strong{color:var(--ink);font-weight:600}
+
+/* queue */
+.group{margin-top:28px}
+.group-head{display:flex;align-items:baseline;gap:10px;margin-bottom:10px}
+.count{color:var(--muted);font-weight:500}
+.group-note{color:var(--muted);font-size:13.5px;margin-left:auto}
+.rows{background:var(--surface);border:1px solid var(--line);border-radius:10px;overflow:hidden}
+.row{all:unset;box-sizing:border-box;display:grid;cursor:pointer;width:100%;
+  grid-template-columns:130px minmax(140px,1.1fr) 132px 128px minmax(220px,2fr) 96px;
+  gap:16px;align-items:center;padding:14px 18px 14px 15px;border-left:3px solid transparent;
+  border-top:1px solid var(--line)}
+.row:first-child{border-top:0}
+.row:hover{background:var(--surface-2)}
+.row:focus-visible{outline:2px solid var(--focus);outline-offset:-2px;border-radius:0}
+.row.s-ready{border-left-color:var(--ok)}
+.row.s-review{border-left-color:var(--warn)}
+.row.s-return{border-left-color:var(--bad)}
+.row.s-booked,.row.s-returned{border-left-color:var(--line-strong)}
+.c-po{font-weight:700}
+.c-from{min-width:0}
+.c-from .k{display:block;font-size:12.5px;color:var(--muted)}
+.c-quote{color:var(--muted);font-size:14px}
+.c-amt{text-align:right;font-weight:600}
+.c-found{display:flex;align-items:center;gap:8px;min-width:0}
+.c-found span{overflow:hidden;text-overflow:ellipsis}
+.more{flex:none;font-size:12.5px;color:var(--muted);background:var(--surface-2);border:1px solid var(--line);padding:1px 7px;border-radius:999px}
+.c-time{text-align:right;color:var(--muted);font-size:13.5px}
+.rows-head{display:grid;grid-template-columns:130px minmax(140px,1.1fr) 132px 128px minmax(220px,2fr) 96px;
+  gap:16px;padding:9px 18px 9px 18px;font-size:12.5px;color:var(--muted);background:var(--surface-2);border-bottom:1px solid var(--line)}
+.rows-head .r{text-align:right}
+.empty{padding:18px;color:var(--muted)}
+.ico{width:16px;height:16px;flex:none}
+.ok{color:var(--ok)} .warn{color:var(--warn)} .bad{color:var(--bad)} .info{color:var(--info)} .mut{color:var(--muted)}
+
+/* detail */
+.crumb{margin-bottom:16px}
+.d-head{display:flex;gap:20px;align-items:flex-start;flex-wrap:wrap}
+.d-title{min-width:0}
+.d-sub{color:var(--muted);margin:0}
+.d-actions{margin-left:auto;display:flex;gap:10px;flex-wrap:wrap}
+.status{display:inline-flex;align-items:center;gap:6px;font-size:13px;font-weight:600;padding:3px 10px;border-radius:999px;vertical-align:middle;margin-left:10px}
+.status.ready{background:var(--ok-bg);color:var(--ok)}
+.status.review{background:var(--warn-bg);color:var(--warn)}
+.status.return{background:var(--bad-bg);color:var(--bad)}
+.status.booked,.status.returned{background:var(--surface-2);color:var(--muted);border:1px solid var(--line)}
+.callout{margin-top:18px;padding:14px 16px;border-radius:10px;border:1px solid var(--line);background:var(--surface);
+  display:flex;gap:12px;align-items:flex-start}
+.callout.ready{border-color:color-mix(in srgb,var(--ok) 35%,var(--line));background:var(--ok-bg)}
+.callout.review{border-color:color-mix(in srgb,var(--warn) 35%,var(--line));background:var(--warn-bg)}
+.callout.return{border-color:color-mix(in srgb,var(--bad) 35%,var(--line));background:var(--bad-bg)}
+.callout p{margin:0}
+.callout .ico{margin-top:3px;width:18px;height:18px}
+
+.panel{background:var(--surface);border:1px solid var(--line);border-radius:10px;margin-top:20px}
+.panel-head{padding:14px 18px;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+.panel-head .aside{margin-left:auto;color:var(--muted);font-size:13.5px}
+.panel-body{padding:16px 18px}
+
+/* attention */
+.flags{list-style:none;margin:0;padding:0}
+.flag{display:grid;grid-template-columns:20px 1fr auto;gap:12px;align-items:start;padding:14px 18px;border-top:1px solid var(--line)}
+.flag:first-child{border-top:0}
+.flag p{margin:2px 0 0;color:var(--muted);max-width:76ch}
+.flag.done .flag-t{color:var(--muted);text-decoration:line-through;text-decoration-color:var(--line-strong)}
+.flag-t{font-weight:600}
+.tag{font-size:12px;font-weight:600;padding:1px 8px;border-radius:999px;margin-left:8px;vertical-align:1px}
+.tag.money{background:var(--bad-bg);color:var(--bad)}
+.tag.decision{background:var(--info-bg);color:var(--info)}
+.reviewed{display:inline-flex;align-items:center;gap:6px;color:var(--ok);font-weight:600;font-size:13.5px}
+
+/* the comparison, the one loud element */
+.split{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.55fr);gap:20px;align-items:start}
+.cmp-wrap{overflow-x:auto}
+.cmp{width:100%;border-collapse:separate;border-spacing:0;font-size:14px}
+.cmp th{font-size:12.5px;font-weight:600;color:var(--muted);text-align:left;padding:10px 14px;border-bottom:1px solid var(--line);background:var(--surface-2)}
+.cmp td{padding:11px 14px;border-bottom:1px solid var(--line);vertical-align:top}
+.cmp tr:last-child td{border-bottom:0}
+.cmp .f{color:var(--muted);width:24%}
+.cmp .spine{width:44px;text-align:center;padding-left:0;padding-right:0;background:var(--surface-2);
+  border-left:1px solid var(--line);border-right:1px solid var(--line)}
+.cmp th.spine{background:var(--surface-2)}
+.cmp .po-side{background:color-mix(in srgb,var(--info-bg) 45%,transparent)}
+.cmp th.po-side{background:color-mix(in srgb,var(--info-bg) 80%,var(--surface-2))}
+.cmp tr.mismatch td{background:var(--bad-bg)}
+.cmp tr.mismatch td.spine{background:color-mix(in srgb,var(--bad) 18%,var(--bad-bg))}
+.mark{display:inline-flex;width:24px;height:24px;border-radius:999px;align-items:center;justify-content:center;font-weight:700;font-size:13px}
+.mark.yes{background:var(--ok-bg);color:var(--ok)}
+.mark.amount{background:var(--ok-bg);color:var(--ok)}
+.mark.no{background:var(--bad);color:#fff}
+.mark.na{color:var(--muted)}
+.sku{font-weight:600}
+.desc{color:var(--muted);font-size:13px;display:block;margin-top:2px}
+.num{text-align:right;white-space:nowrap}
+.sub-h{padding:12px 14px 8px;font-size:13.5px;font-weight:600;border-top:1px solid var(--line);background:var(--surface)}
+.cmp-note{padding:10px 14px 12px;color:var(--muted);font-size:13.5px;border-top:1px solid var(--line)}
+.legend{display:flex;gap:16px;flex-wrap:wrap;font-size:13px;color:var(--muted)}
+.legend span{display:inline-flex;align-items:center;gap:6px}
+
+/* checklist */
+.check{list-style:none;margin:0;padding:0;counter-reset:ck}
+.check li{display:grid;grid-template-columns:22px 20px 1fr;gap:8px;padding:10px 18px;border-top:1px solid var(--line);align-items:start;counter-increment:ck}
+.check li:first-child{border-top:0}
+.check li::before{content:counter(ck);color:var(--muted);font-size:12.5px;text-align:right;padding-top:2px}
+.check .ci{font-weight:600;font-size:14px}
+.check .cn{display:block;color:var(--muted);font-size:13px;margin-top:1px}
+.check li.st-flag{background:var(--warn-bg)}
+.check li.st-block{background:var(--bad-bg)}
+.check .ico{margin-top:3px}
+
+/* booking form */
+.bf{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px 24px}
+.fld label,.fld .lbl{display:block;font-size:12.5px;color:var(--muted);margin-bottom:4px}
+.fld .val{font-weight:600;padding:7px 0}
+.fld input,.fld select,.fld textarea{width:100%;padding:7px 10px;border:1px solid var(--line-strong);border-radius:8px;background:var(--surface)}
+.fld textarea{min-height:84px;resize:vertical;line-height:1.45}
+.fld.edited input,.fld.edited select,.fld.edited textarea{border-color:var(--info);box-shadow:0 0 0 3px var(--info-bg)}
+.edited-pill{font-size:11.5px;color:var(--info);font-weight:600;margin-left:6px}
+.fld.wide{grid-column:1 / -1}
+.bf-foot{display:flex;align-items:center;gap:12px;margin-top:16px;padding-top:14px;border-top:1px solid var(--line);flex-wrap:wrap}
+pre.payload{margin:14px 0 0;padding:14px;background:var(--surface-2);border:1px solid var(--line);border-radius:8px;
+  font:12.5px/1.55 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;overflow-x:auto;white-space:pre}
+
+/* activity */
+.acts{list-style:none;margin:0;padding:6px 18px 14px}
+.acts li{display:grid;grid-template-columns:84px 1fr;gap:12px;padding:6px 0;font-size:14px}
+.acts .t{color:var(--muted);font-size:13px}
+.acts li.you .x{font-weight:600}
+
+.result{margin-top:18px;padding:16px;border-radius:10px;background:var(--surface);border:1px solid var(--line)}
+.result h3{display:flex;align-items:center;gap:8px}
+.result dl{display:grid;grid-template-columns:150px 1fr;gap:6px 14px;margin:12px 0 0;font-size:14px}
+.result dt{color:var(--muted)}
+.result dd{margin:0;font-weight:600}
+.sim{color:var(--muted);font-size:13px;margin:10px 0 0}
+
+/* modal */
+.scrim{position:fixed;inset:0;z-index:50;background:rgba(10,15,20,.45);display:flex;align-items:center;justify-content:center;padding:20px;
+  padding-top:calc(20px + env(safe-area-inset-top,0px));padding-bottom:calc(20px + env(safe-area-inset-bottom,0px))}
+.modal{background:var(--surface);color:var(--ink);border-radius:12px;box-shadow:var(--shadow);width:100%;max-width:560px;
+  max-height:100%;overflow:auto;border:1px solid var(--line)}
+.modal-head{padding:18px 20px 0}
+.modal-head p{margin:6px 0 0;color:var(--muted)}
+.modal-body{padding:16px 20px}
+.modal-foot{padding:14px 20px 18px;display:flex;gap:10px;justify-content:flex-end;border-top:1px solid var(--line)}
+.summary{display:grid;grid-template-columns:140px 1fr;gap:6px 14px;font-size:14px;margin:0 0 16px;padding:12px 14px;background:var(--surface-2);border-radius:8px}
+.summary dt{color:var(--muted)} .summary dd{margin:0;font-weight:600}
+.req{color:var(--bad);font-size:13px;margin-top:4px;display:none}
+.req.show{display:block}
+.steps{list-style:none;margin:6px 0 0;padding:0}
+.steps li{display:flex;align-items:center;gap:10px;padding:7px 0;color:var(--muted)}
+.steps li.on{color:var(--ink)}
+.steps li.done{color:var(--ink)}
+.dot{width:18px;height:18px;border-radius:999px;border:2px solid var(--line-strong);flex:none;display:inline-flex;align-items:center;justify-content:center}
+.steps li.on .dot{border-color:var(--info);border-top-color:transparent;animation:spin .8s linear infinite}
+.steps li.done .dot{border-color:var(--ok);background:var(--ok)}
+.steps li.done .dot::after{content:"";width:6px;height:9px;border:solid #fff;border-width:0 2px 2px 0;transform:rotate(45deg) translate(-1px,-1px)}
+@keyframes spin{to{transform:rotate(360deg)}}
+.email{white-space:pre-wrap;background:var(--surface-2);border:1px solid var(--line);border-radius:8px;padding:14px;font-size:14px;line-height:1.55;margin:0}
+.email-meta{display:grid;grid-template-columns:60px 1fr;gap:4px 10px;font-size:13.5px;margin-bottom:10px}
+.email-meta dt{color:var(--muted)} .email-meta dd{margin:0}
+
+.toast{position:fixed;left:50%;bottom:calc(24px + env(safe-area-inset-bottom,0px));transform:translateX(-50%) translateY(20px);
+  background:var(--action);color:var(--action-ink);padding:10px 16px;border-radius:8px;font-weight:600;font-size:14px;
+  opacity:0;pointer-events:none;transition:opacity .18s,transform .18s;z-index:60}
+.toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+
+.enter{animation:enter .22s ease-out}
+@keyframes enter{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+@media (prefers-reduced-motion:reduce){
+  .enter,.steps li.on .dot{animation:none}
+  .toast{transition:none}
+}
+
+/* responsive */
+@media (max-width:980px){
+  .split{grid-template-columns:1fr}
+}
+@media (max-width:860px){
+  .rows-head{display:none}
+  .row{grid-template-columns:1fr auto;grid-template-areas:"po amt" "from from" "found found" "quote time";gap:4px 12px}
+  .c-po{grid-area:po} .c-amt{grid-area:amt} .c-from{grid-area:from} .c-found{grid-area:found;margin-top:4px}
+  .c-quote{grid-area:quote;font-size:13px} .c-time{grid-area:time}
+  .bf{grid-template-columns:1fr}
+  .d-actions{margin-left:0;width:100%}
+}
+@media (max-width:560px){
+  .top-in{flex-wrap:wrap}
+  .wrap{padding:20px 14px 64px}
+  h1{font-size:22px}
+  .summary,.result dl{grid-template-columns:1fr}
+  .proto{display:none}
+}
+</style>
+</head>
+<body>
+<header class="top">
+  <div class="top-in">
+    <div class="brand">
+      <span class="brand-rule" aria-hidden="true"></span>
+      <div>
+        <div class="brand-org">F5 Sales Operations</div>
+        <div class="brand-name">PO review</div>
+      </div>
+    </div>
+    <div class="top-right">
+      <span class="proto">Prototype with sample data</span>
+      <button class="btn btn-small" id="reset" type="button">Reset demo</button>
+    </div>
+  </div>
+</header>
+<main class="wrap" id="app" tabindex="-1"></main>
+<div id="modal-root"></div>
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+<script>
+(function(){
+"use strict";
+
+/* ------------------------------------------------------------------ data
+   Built from the validation engine's output on the sample POs. Ingram and
+   TD SYNNEX are the synthetic test POs; WWT, PayPal and Dell reflect real
+   sample POs and their real quote data. Personal contact details omitted. */
+var SEED = [
+ {
+  id:"ingram", po:"4501234567", from:"Ingram Micro", channel:"Distributor",
+  file:"Ingram_PO_4501234567.pdf", received:"8:12 AM", order:1, poDate:"Oct 5, 2026",
+  quote:"F5Q-00972766", quoteFound:true, opportunity:"006do00000K8sFsAAJ",
+  status:"ready", found:"Matches quote F5Q-00972766", rank:9,
+  checklist:[
+   ["pass","Issued to an F5 entity","F5, Inc. (CORP)"],
+   ["pass","PO number","4501234567"],
+   ["pass","Payment terms","NET 30"],
+   ["pass","Bill To","Ingram Micro Inc., one address"],
+   ["pass","Ship To","Physical address, contact name, email and phone"],
+   ["pass","End User","Contoso Corporation, same as Ship To"],
+   ["na","Reseller","Distributor order; Ingram Micro is the Bill To"],
+   ["pass","Inco Terms","FCA Ship Point"],
+   ["pass","Product information","2 lines with F5 SKU, quantity and price"],
+   ["pass","PO total","$24,242.10"],
+   ["pass","Shipping details","FedEx Ground, carrier account on the PO"]
+  ],
+  flags:[],
+  compare:[
+   ["Quote number","F5Q-00972766","F5Q-00972766","yes"],
+   ["Opportunity","Not on PO","006do00000K8sFsAAJ","na"],
+   ["Currency","USD","USD","yes"],
+   ["Order total",24242.10,24242.10,"yes"]
+  ],
+  lines:[
+   {po:{sku:"F5-BIG-VE-BTA-25MV18",desc:"BIG-IP VE Best Bundle 25 Mbps",qty:2,total:20165.04},f5:{sku:"F5-BIG-VE-BTA-25MV18",qty:2,total:20165.04},m:"yes"},
+   {po:{sku:"F5-SVC-BIG-VE+PREL13",desc:"Premium Plus service",qty:2,total:4077.06},f5:{sku:"F5-SVC-BIG-VE+PREL13",qty:2,total:4077.06},m:"yes"}
+  ],
+  extra:[], lineNote:"",
+  booking:{opportunity:"006do00000K8sFsAAJ",amount:24242.10,orderType:"Standard",distributor:"Ingram Micro",reseller:"Ingram Micro",issues:false},
+  notes:[
+   {title:"Note to RO: End User info",body:"Contoso Corporation\n1 Contoso Way, Seattle, WA 98101\nSame as Ship To contact"},
+   {title:"Note to RO: Carrier information",body:"Carrier: FedEx\nMethod: Ground\nCarrier account on the PO"}
+  ],
+  activity:[["8:12 AM","Received in the SOS PO inbox"],["8:12 AM","Read 2 line items from the PDF"],["8:13 AM","Found quote F5Q-00972766 in F5 records"],["8:13 AM","All 11 checklist items passed; draft Booking Form prepared"]]
+ },
+ {
+  id:"dell", po:"PO706839", from:"Dell", channel:"Direct",
+  file:"PO706839.pdf", received:"9:40 AM", order:4, poDate:"May 8, 2025",
+  quote:"F5Q-00972677", quoteFound:true, opportunity:"006Po00000efMf3IAE",
+  status:"review", found:"$1,400.00 on the PO isn't on the quote", rank:1,
+  checklist:[
+   ["pass","Issued to an F5 entity","F5, Inc. (CORP)"],
+   ["pass","PO number","PO706839"],
+   ["info","Payment terms","NET 90. The account's default terms aren't connected yet, so this can't be compared."],
+   ["pass","Bill To","Dell USA LP, one address"],
+   ["flag","Ship To","No contact name or phone for Dell, Inc; Shiner Lab"],
+   ["flag","End User","No End User on the PO"],
+   ["na","Reseller","Direct order"],
+   ["na","Inco Terms","Not on this PO (not always present)"],
+   ["pass","Product information","Part numbers read “Not Available”; quote F5Q-00972677 cited instead"],
+   ["pass","PO total","$74,844.80"],
+   ["info","Shipping details","No carrier on the PO. Confirm how it ships."]
+  ],
+  flags:[
+   {id:"d1",kind:"money",title:"$1,400.00 on the PO isn't on the quote",detail:"Line 2 (1,400 × $1.00) has no matching quote line. If it's a shipping charge, book the quote amount and note the charge for RO.",reseller:"What line 2 ($1,400.00) covers. It isn't on quote F5Q-00972677."},
+   {id:"d2",kind:"checklist",title:"No End User on the PO",detail:"The checklist allows the End User details to be added as a note on the Booking Form.",reseller:"The End User's company name, address and contact."},
+   {id:"d3",kind:"checklist",title:"Ship To contact is incomplete",detail:"No contact name or phone number for Dell, Inc; Shiner Lab.",reseller:"A contact name and phone number for the Ship To."}
+  ],
+  compare:[
+   ["Quote number","F5Q-00972677","F5Q-00972677","yes"],
+   ["Opportunity","Not on PO","006Po00000efMf3IAE","na"],
+   ["Order total",74844.80,73444.80,"no"]
+  ],
+  lines:[
+   {po:{sku:"",desc:"VELOS field upgrade: QSFP28 transceiver (100G-SR4, 100M, MPO MMF, DDM)",qty:20,total:73444.80},f5:{sku:"F5-UPGVELQSFP28-SR4",qty:null,total:73444.80},m:"amount"},
+   {po:{sku:"",desc:"Line 2",qty:1400,total:1400.00},f5:null,m:"no"}
+  ],
+  extra:[], lineNote:"The PO prints “Not Available” as its part numbers, so lines were paired with the quote by amount.",
+  booking:{opportunity:"006Po00000efMf3IAE",amount:73444.80,orderType:"Standard",distributor:"None",reseller:"F5 Direct Deal",issues:true},
+  notes:[
+   {title:"Note to RO: Additional charge",body:"The PO includes $1,400.00 on line 2 that is not on quote F5Q-00972677. Booked at the quote amount; confirm before booking."},
+   {title:"Note to RO: End User info",body:"Not provided on the PO. Add End User details before booking."}
+  ],
+  activity:[["9:40 AM","Received in the SOS PO inbox"],["9:40 AM","Read 2 line items from the PDF"],["9:41 AM","Found quote F5Q-00972677 in F5 records"],["9:41 AM","PO total is $1,400.00 above the quote; sent for review"]]
+ },
+ {
+  id:"paypal", po:"5100098997", from:"PayPal", channel:"Direct",
+  file:"PayPal_PO_5100098997.pdf", received:"9:15 AM", order:3, poDate:"Jun 17, 2025",
+  quote:"F5Q-00986557", quoteFound:true, opportunity:"006Po00000bh75lIAA",
+  status:"review", found:"No End User on the PO", rank:2,
+  checklist:[
+   ["pass","Issued to an F5 entity","F5, Inc. (CORP)"],
+   ["pass","PO number","5100098997"],
+   ["info","Payment terms","NET 45. The account's default terms aren't connected yet, so this can't be compared."],
+   ["pass","Bill To","PayPal Inc, one address"],
+   ["flag","Ship To","No phone for the Ship To contact"],
+   ["flag","End User","No End User on the PO"],
+   ["na","Reseller","Direct order"],
+   ["flag","Inco Terms","“FOB destination” is a destination term"],
+   ["pass","Product information","PayPal item codes on the PO; quote F5Q-00986557 cited"],
+   ["pass","PO total","$67,081.60"],
+   ["info","Shipping details","No carrier on the PO. Confirm how it ships."]
+  ],
+  flags:[
+   {id:"p1",kind:"checklist",title:"No End User on the PO",detail:"The checklist allows the End User details to be added as a note on the Booking Form.",reseller:"The End User's company name, address and contact."},
+   {id:"p2",kind:"decision",title:"Inco Terms “FOB destination” need approval",detail:"Destination terms are accepted only when approved. This one comes from PayPal's standard terms and conditions.",reseller:null},
+   {id:"p3",kind:"checklist",title:"Ship To contact has no phone",detail:"PayPal Inc, 2211 North First Street, San Jose has a contact but no phone number.",reseller:"A phone number for the Ship To contact."}
+  ],
+  compare:[
+   ["Quote number","F5Q-00986557","F5Q-00986557","yes"],
+   ["Opportunity","Not on PO","006Po00000bh75lIAA","na"],
+   ["Order total",67081.60,67081.60,"yes"]
+  ],
+  lines:[
+   {po:{sku:"061925.1MG",desc:"BIG-IP Virtual Edition: Local Traffic Manager 1",qty:1,total:63148.43},f5:{sku:"F5-BIG-LTM-VE-1G-V18",qty:null,total:63148.43},m:"amount"},
+   {po:{sku:"061925.2MG",desc:"BIG-IP Service: Premium Virtual Edition",qty:1,total:3933.17},f5:{sku:"F5-SVC-BIG-VE+PREL13",qty:null,total:3933.17},m:"amount"}
+  ],
+  extra:[["F5-BIG-VE-LAB-V18",0],["F5-SVC-BIG-VE+PREL13",0]],
+  lineNote:"PayPal uses its own item codes, so lines were paired with the quote by amount. Both match to the cent.",
+  booking:{opportunity:"006Po00000bh75lIAA",amount:67081.60,orderType:"Standard",distributor:"None",reseller:"F5 Direct Deal",issues:true},
+  notes:[{title:"Note to RO: End User info",body:"Not provided on the PO. Add End User details before booking."}],
+  activity:[["9:15 AM","Received in the SOS PO inbox"],["9:15 AM","Read 2 line items from the PDF"],["9:16 AM","Found quote F5Q-00986557 in F5 records; totals match"],["9:16 AM","3 checklist items flagged; sent for review"]]
+ },
+ {
+  id:"wwt", po:"4527709", from:"World Wide Technology", channel:"Reseller",
+  file:"wwt_po_4527709.pdf", received:"8:47 AM", order:2, poDate:"Nov 4, 2025",
+  quote:"F5Q-01083998", quoteFound:true, opportunity:"006Po00000f1Gr7IAE",
+  status:"review", found:"Inco Terms “FOB” need an SOS decision", rank:3,
+  checklist:[
+   ["pass","Issued to an F5 entity","F5 Networks Inc., the pre-2021 name for F5, Inc."],
+   ["pass","PO number","4527709"],
+   ["info","Payment terms","NET 60. The account's default terms aren't connected yet, so this can't be compared."],
+   ["pass","Bill To","World Wide Technology, labeled “Send Invoices To”"],
+   ["flag","Ship To","No email for the Ship To contact"],
+   ["pass","End User","GMF NA US Management Company, with full contact"],
+   ["na","Reseller","WWT is the reseller and the Bill To"],
+   ["flag","Inco Terms","“FOB” isn't one of the checklist's examples"],
+   ["pass","Product information","1 line with F5 SKU, quantity and price"],
+   ["pass","PO total","$3,749.92"],
+   ["info","Shipping details","No carrier on the PO. Confirm how it ships."]
+  ],
+  flags:[
+   {id:"w1",kind:"decision",title:"Inco Terms “FOB” need an SOS decision",detail:"The checklist lists FCA Ship Point, Origin and EXW as examples. SOS hasn't yet decided whether plain FOB is acceptable.",reseller:null},
+   {id:"w2",kind:"checklist",title:"Ship To contact has no email",detail:"WWT WMS Operations, Edwardsville, IL has a contact name and phone but no email.",reseller:"An email address for the Ship To contact."}
+  ],
+  compare:[
+   ["Quote number","F5Q-01083998","F5Q-01083998","yes"],
+   ["Opportunity","Not on PO","006Po00000f1Gr7IAE","na"],
+   ["Order total",3749.92,3749.92,"yes"]
+  ],
+  lines:[
+   {po:{sku:"F5-UPG-SFP28-SR",desc:"Field upgrade: SFP28 transceiver 25G-SR",qty:4,total:3749.92},f5:{sku:"F5-UPG-SFP28-SR",qty:null,total:3749.92},m:"yes"}
+  ],
+  extra:[], lineNote:"",
+  booking:{opportunity:"006Po00000f1Gr7IAE",amount:3749.92,orderType:"Standard",distributor:"None",reseller:"World Wide Technology",issues:true},
+  notes:[{title:"Note to RO: End User info",body:"GMF NA US Management Company\nContact details on the PO"}],
+  activity:[["8:47 AM","Received in the SOS PO inbox"],["8:47 AM","Read 1 line item from the PDF"],["8:48 AM","Found quote F5Q-01083998 in F5 records; totals match"],["8:48 AM","2 checklist items flagged; sent for review"]]
+ },
+ {
+  id:"synnex", po:"TD-00000-Z", from:"TD SYNNEX", channel:"Distributor",
+  file:"TD_SYNNEX_PO.pdf", received:"Yesterday", order:0, poDate:"Mar 15, 2026",
+  quote:"F5Q-99999999", quoteFound:false, opportunity:"",
+  status:"return", found:"Quote F5Q-99999999 isn't in F5 records", rank:0,
+  checklist:[
+   ["pass","Issued to an F5 entity","F5, Inc. (CORP)"],
+   ["pass","PO number","TD-00000-Z"],
+   ["pass","Payment terms","NET 45"],
+   ["pass","Bill To","TD SYNNEX Corporation, one address"],
+   ["pass","Ship To","Physical address, contact name, email and phone"],
+   ["pass","End User","Contoso Corporation"],
+   ["na","Reseller","Distributor order"],
+   ["pass","Inco Terms","EXW"],
+   ["pass","Product information","2 lines with F5 SKU, quantity and price"],
+   ["pass","PO total","$24,242.10"],
+   ["pass","Shipping details","UPS Ground, carrier account on the PO"]
+  ],
+  flags:[
+   {id:"s1",kind:"quote",title:"Quote F5Q-99999999 isn't in F5 records",detail:"Rechecked regularly since it arrived yesterday at 4:05 PM. New quotes can take a little while to reach F5's records, so the tool waited before flagging it.",reseller:"Confirmation of the quote number. We couldn't find quote F5Q-99999999 in our records."}
+  ],
+  compare:[
+   ["Quote number","F5Q-99999999","Not found","no"],
+   ["Opportunity","Not on PO","Needs a quote","na"],
+   ["Order total",24242.10,"No quote to compare","na"]
+  ],
+  lines:[
+   {po:{sku:"F5-BIG-VE-BTA-25MV18",desc:"BIG-IP VE Best Bundle 25 Mbps",qty:2,total:20165.04},f5:null,m:"na"},
+   {po:{sku:"F5-SVC-BIG-VE+PREL13",desc:"Premium Plus service",qty:2,total:4077.06},f5:null,m:"na"}
+  ],
+  extra:[], lineNote:"Lines can't be compared until the quote is found.",
+  booking:null, notes:[],
+  activity:[["Yesterday 4:05 PM","Received in the SOS PO inbox"],["Yesterday 4:05 PM","Read 2 line items from the PDF"],["Yesterday 4:06 PM","Quote F5Q-99999999 not found yet; will recheck"],["7:30 AM","Still not found after rechecking overnight; ready to return to reseller"]]
+ }
+];
+
+/* ------------------------------------------------------------- helpers */
+var KEY = "sos-po-review-demo-v1";
+var money = new Intl.NumberFormat("en-US",{style:"currency",currency:"USD"});
+function fmt(v){ return typeof v === "number" ? money.format(v) : (v == null ? "" : String(v)); }
+function esc(s){ return String(s == null ? "" : s).replace(/[&<>"']/g,function(c){return {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c];}); }
+function now(){ return new Date().toLocaleTimeString("en-US",{hour:"numeric",minute:"2-digit"}); }
+function clone(x){ return JSON.parse(JSON.stringify(x)); }
+function fresh(){
+  return { view:{name:"queue"}, orders: clone(SEED).map(function(o){
+    o.reviewed = []; o.edits = {}; o.result = null; return o; }) };
+}
+function load(){
+  try { var raw = localStorage.getItem(KEY); if (raw){ var s = JSON.parse(raw); if (s && s.orders && s.orders.length === SEED.length) return s; } }
+  catch(e){}
+  return fresh();
+}
+function save(){ try { localStorage.setItem(KEY, JSON.stringify(state)); } catch(e){} }
+var state = load();
+function byId(id){ for (var i=0;i<state.orders.length;i++){ if (state.orders[i].id === id) return state.orders[i]; } return null; }
+
+var ICON = {
+  pass:'<svg class="ico ok" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="7" fill="currentColor" opacity=".14"/><path d="M4.6 8.3l2.2 2.2 4.6-4.8" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+  flag:'<svg class="ico warn" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="7" fill="currentColor" opacity=".16"/><path d="M8 4.4v4.4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><circle cx="8" cy="11.3" r="1" fill="currentColor"/></svg>',
+  block:'<svg class="ico bad" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="7" fill="currentColor" opacity=".16"/><path d="M5.6 5.6l4.8 4.8M10.4 5.6l-4.8 4.8" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>',
+  info:'<svg class="ico info" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="7" fill="currentColor" opacity=".14"/><circle cx="8" cy="4.9" r="1" fill="currentColor"/><path d="M8 7.2v4.4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>',
+  na:'<svg class="ico mut" viewBox="0 0 16 16" aria-hidden="true"><path d="M4.5 8h7" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>'
+};
+var STATUS_LABEL = {ready:"Ready to approve", review:"Needs review", return:"Return to reseller", booked:"Booked", returned:"Returned to reseller"};
+var CHECK_LABEL = {pass:"Passed", flag:"Flagged", block:"Blocked", info:"Note", na:"Not applicable"};
+
+function openFlags(o){ return o.flags.filter(function(f){ return o.reviewed.indexOf(f.id) === -1; }); }
+function bookingValues(o){
+  var b = o.booking; if (!b) return null;
+  var e = o.edits || {};
+  return {
+    name: "BF-AUTO-" + o.po,
+    opportunity: b.opportunity,
+    po: o.po,
+    quote: o.quote,
+    amount: e.amount != null ? e.amount : b.amount,
+    orderType: e.orderType != null ? e.orderType : b.orderType,
+    distributor: e.distributor != null ? e.distributor : b.distributor,
+    reseller: e.reseller != null ? e.reseller : b.reseller,
+    issues: b.issues,
+    notes: o.notes.map(function(n,i){ var k = "note"+i; return {title:n.title, body: e[k] != null ? e[k] : n.body}; })
+  };
+}
+function payloadFor(o){
+  var v = bookingValues(o); if (!v) return null;
+  return {
+    Name: v.name,
+    Opportunity__c: v.opportunity,
+    PO__c: v.po,
+    F_5_Quote__c: v.quote,
+    Total_Amount__c: Number(v.amount),
+    CurrencyIsoCode: "USD",
+    Sales_Order_Type__c: v.orderType,
+    Distributor__c: v.distributor === "None" ? null : v.distributor,
+    Reseller_Name__c: v.reseller,
+    Stage__c: "In Process by SOS",
+    Order_Issues__c: v.issues,
+    AttachedContentNotes: v.notes.map(function(n){ return {Title:n.title, Body:n.body}; })
+  };
+}
+function editedCount(o){ var n=0; for (var k in (o.edits||{})) if (Object.prototype.hasOwnProperty.call(o.edits,k)) n++; return n; }
+
+var toastTimer = null;
+function toast(msg){
+  var t = document.getElementById("toast"); t.textContent = msg; t.classList.add("show");
+  clearTimeout(toastTimer); toastTimer = setTimeout(function(){ t.classList.remove("show"); }, 2200);
+}
+
+/* --------------------------------------------------------------- queue */
+function renderQueue(){
+  var groups = [
+    {key:"ready", title:"Ready to approve", note:"Everything matches the quote", list:[]},
+    {key:"review", title:"Needs review", note:"Money issues first", list:[]},
+    {key:"return", title:"Return to reseller", note:"Can't be booked as sent", list:[]},
+    {key:"done", title:"Done today", note:"", list:[]}
+  ];
+  state.orders.forEach(function(o){
+    var g = (o.status === "booked" || o.status === "returned") ? "done" : o.status;
+    for (var i=0;i<groups.length;i++) if (groups[i].key === g) groups[i].list.push(o);
+  });
+  groups.forEach(function(g){ g.list.sort(function(a,b){ return a.rank - b.rank; }); });
+
+  var open = state.orders.filter(function(o){ return ["ready","review","return"].indexOf(o.status) > -1; }).length;
+  var booked = state.orders.filter(function(o){ return o.status === "booked"; }).length;
+  var counts = {}; groups.forEach(function(g){ counts[g.key] = g.list.length; });
+
+  var h = '<div class="enter">';
+  h += '<h1>Purchase orders waiting for SOS</h1>';
+  h += '<p class="lede"><strong>' + open + ' open</strong>: ' + counts.ready + ' ready to approve, ' + counts.review + ' to review, ' + counts["return"] + ' to return to the reseller. ' +
+       '<strong>' + booked + ' booked</strong> so far today.</p>';
+  groups.forEach(function(g){
+    if (g.key === "done" && !g.list.length) return;
+    h += '<section class="group" aria-labelledby="g-' + g.key + '"><div class="group-head"><h2 id="g-' + g.key + '">' + g.title + ' <span class="count">' + g.list.length + '</span></h2>' +
+         (g.note ? '<span class="group-note">' + g.note + '</span>' : '') + '</div><div class="rows">';
+    if (!g.list.length){
+      h += '<div class="empty">' + (g.key === "ready" ? "Nothing waiting. Orders that match their quote land here." : "Nothing here right now.") + '</div>';
+    } else {
+      h += '<div class="rows-head" aria-hidden="true"><span>PO</span><span>From</span><span>Quote</span><span class="r">Amount</span><span>What we found</span><span class="r">Received</span></div>';
+      g.list.forEach(function(o){
+        var extra = o.flags.length > 1 && o.status === "review" ? '<span class="more">+' + (o.flags.length - 1) + ' more</span>' : "";
+        var found = o.status === "booked" ? "Booking Form created" : (o.status === "returned" ? "Returned to reseller" : o.found);
+        var icon = o.status === "ready" ? ICON.pass : (o.status === "review" ? (o.flags[0] && o.flags[0].kind === "money" ? ICON.block : ICON.flag) : (o.status === "return" ? ICON.block : ICON.pass));
+        var amt = o.compare.filter(function(c){ return c[0] === "Order total"; })[0];
+        h += '<button type="button" class="row s-' + o.status + '" data-open="' + o.id + '" aria-label="Open PO ' + esc(o.po) + ' from ' + esc(o.from) + '">' +
+             '<span class="c-po">' + esc(o.po) + '</span>' +
+             '<span class="c-from">' + esc(o.from) + '<span class="k">' + esc(o.channel) + '</span></span>' +
+             '<span class="c-quote">' + esc(o.quote) + '</span>' +
+             '<span class="c-amt">' + fmt(amt ? amt[1] : "") + '</span>' +
+             '<span class="c-found">' + icon + '<span>' + esc(found) + '</span>' + extra + '</span>' +
+             '<span class="c-time">' + esc(o.received) + '</span></button>';
+      });
+    }
+    h += '</div></section>';
+  });
+  h += '</div>';
+  return h;
+}
+
+/* -------------------------------------------------------------- detail */
+function renderDetail(o){
+  var st = o.status;
+  var open = openFlags(o);
+  var h = '<div class="enter">';
+  h += '<div class="crumb"><button type="button" class="linkish" data-back>Back to all orders</button></div>';
+  h += '<div class="d-head"><div class="d-title"><h1 id="d-title" tabindex="-1">PO ' + esc(o.po) +
+       '<span class="status ' + st + '">' + STATUS_LABEL[st] + '</span></h1>' +
+       '<p class="d-sub">' + esc(o.from) + ' (' + esc(o.channel.toLowerCase()) + '). PO dated ' + esc(o.poDate) + ', received ' + esc(o.received.toLowerCase() === "yesterday" ? "yesterday" : "today at " + o.received) + '. Source file ' + esc(o.file) + '.</p></div>';
+  h += '<div class="d-actions">';
+  if (st === "ready" || st === "review"){
+    h += '<button type="button" class="btn" data-return>Return to reseller</button>';
+    var dis = open.length ? ' disabled aria-describedby="approve-why"' : '';
+    h += '<button type="button" class="btn btn-primary" data-approve' + dis + '>Approve and create Booking Form</button>';
+  } else if (st === "return"){
+    h += '<button type="button" class="btn btn-primary" data-return>Return to reseller</button>';
+  }
+  h += '</div></div>';
+
+  // summary callout
+  var cls = st === "ready" ? "ready" : (st === "review" ? "review" : (st === "return" ? "return" : ""));
+  var msg = "";
+  if (st === "ready") msg = '<strong>Everything matches quote ' + esc(o.quote) + '.</strong> All checklist items passed and the draft Booking Form is ready. Check it below, then approve.';
+  else if (st === "review") msg = open.length
+      ? '<strong>' + open.length + ' of ' + o.flags.length + ' item' + (o.flags.length>1?'s':'') + ' still to review.</strong> Mark each one reviewed to approve, or return the PO to the reseller.'
+      : '<strong>All flagged items reviewed.</strong> You can approve now. A note is required on the record because this order was flagged.';
+  else if (st === "return") msg = '<strong>This PO can\'t be booked as sent.</strong> The quote it cites isn\'t in F5 records. Send the reseller the drafted reply.';
+  if (msg) h += '<div class="callout ' + cls + '">' + (st === "ready" ? ICON.pass : (st === "return" ? ICON.block : ICON.flag)) + '<p>' + msg + '</p></div>';
+  if (st === "review" && open.length) h += '<p class="sr" id="approve-why">Approve is available once every flagged item is marked reviewed.</p>';
+
+  if (o.result) h += renderResult(o);
+
+  // flags
+  if (o.flags.length && (st === "review" || st === "return")){
+    h += '<section class="panel" aria-labelledby="att-h"><div class="panel-head"><h2 id="att-h">Needs your attention</h2><span class="aside">' + (o.flags.length - open.length) + ' of ' + o.flags.length + ' reviewed</span></div><ul class="flags">';
+    o.flags.forEach(function(f){
+      var done = o.reviewed.indexOf(f.id) > -1;
+      var tag = f.kind === "money" ? '<span class="tag money">Money</span>' : (f.kind === "decision" ? '<span class="tag decision">SOS decision</span>' : (f.kind === "quote" ? '<span class="tag money">Quote</span>' : ''));
+      var ic = f.kind === "money" || f.kind === "quote" ? ICON.block : ICON.flag;
+      h += '<li class="flag' + (done ? ' done' : '') + '">' + ic + '<div><span class="flag-t">' + esc(f.title) + '</span>' + tag + '<p>' + esc(f.detail) + '</p></div>';
+      if (st === "review"){
+        h += done ? '<span class="reviewed">' + ICON.pass + 'Reviewed <button type="button" class="linkish" data-unreview="' + f.id + '" style="margin-left:6px;font-weight:500">Undo</button></span>'
+                  : '<button type="button" class="btn btn-small" data-review="' + f.id + '">Mark reviewed</button>';
+      } else { h += '<span></span>'; }
+      h += '</li>';
+    });
+    h += '</ul></section>';
+  }
+
+  // checklist + comparison
+  h += '<div class="split">';
+  h += '<section class="panel" aria-labelledby="ck-h"><div class="panel-head"><h2 id="ck-h">SOS checklist</h2><span class="aside">' + passCount(o) + ' of 11 passed</span></div><ol class="check">';
+  o.checklist.forEach(function(c){
+    var s = c[0] === "flag" && st === "return" ? "flag" : c[0];
+    h += '<li class="st-' + s + '">' + ICON[s] + '<div><span class="ci">' + esc(c[1]) + '</span><span class="sr"> ' + CHECK_LABEL[s] + '.</span><span class="cn">' + esc(c[2]) + '</span></div></li>';
+  });
+  h += '</ol></section>';
+
+  h += '<section class="panel" aria-labelledby="cmp-h"><div class="panel-head"><h2 id="cmp-h">PO compared with F5 records</h2>' +
+       '<div class="legend aside"><span><span class="mark yes" aria-hidden="true">✓</span>Matches</span><span><span class="mark no" aria-hidden="true">≠</span>Differs</span></div></div>';
+  h += '<div class="cmp-wrap"><table class="cmp"><thead><tr><th scope="col">Field</th><th scope="col" class="po-side">On the PO</th><th scope="col" class="spine"><span class="sr">Match</span></th><th scope="col">In F5 records</th></tr></thead><tbody>';
+  o.compare.forEach(function(c){
+    var m = c[3];
+    var diff = (m === "no" && typeof c[1] === "number" && typeof c[2] === "number") ? '<span class="desc">Difference ' + fmt(c[1] - c[2]) + '</span>' : '';
+    h += '<tr class="' + (m === "no" ? "mismatch" : "") + '"><td class="f">' + esc(c[0]) + '</td><td class="po-side' + (typeof c[1] === "number" ? " num" : "") + '">' + esc(fmt(c[1])) + diff + '</td>' +
+         '<td class="spine">' + markFor(m) + '</td><td class="' + (typeof c[2] === "number" ? "num" : "") + '">' + esc(fmt(c[2])) + '</td></tr>';
+  });
+  h += '</tbody></table>';
+  h += '<div class="sub-h">Line items</div><table class="cmp"><thead><tr><th scope="col" class="po-side">On the PO</th><th scope="col" class="po-side num">Qty</th><th scope="col" class="po-side num">Total</th><th scope="col" class="spine"><span class="sr">Match</span></th><th scope="col">On the quote</th><th scope="col" class="num">Total</th></tr></thead><tbody>';
+  o.lines.forEach(function(l){
+    var p = l.po, q = l.f5;
+    h += '<tr class="' + (l.m === "no" ? "mismatch" : "") + '"><td class="po-side"><span class="sku">' + (p.sku ? esc(p.sku) : '<span class="mut">No part number</span>') + '</span><span class="desc">' + esc(p.desc) + '</span></td>' +
+         '<td class="po-side num">' + esc(p.qty) + '</td><td class="po-side num">' + fmt(p.total) + '</td>' +
+         '<td class="spine">' + markFor(l.m) + '</td>' +
+         '<td>' + (q ? '<span class="sku">' + esc(q.sku) + '</span>' + (q.qty ? '<span class="desc">Qty ' + q.qty + '</span>' : '') : '<span class="mut">' + (l.m === "na" ? "No quote to compare" : "Not on the quote") + '</span>') + '</td>' +
+         '<td class="num">' + (q ? fmt(q.total) : '') + '</td></tr>';
+  });
+  (o.extra || []).forEach(function(x){
+    h += '<tr><td class="po-side"><span class="mut">Not on the PO</span></td><td class="po-side"></td><td class="po-side"></td><td class="spine">' + markFor("na") + '</td><td><span class="sku">' + esc(x[0]) + '</span><span class="desc">No-charge line</span></td><td class="num">' + fmt(x[1]) + '</td></tr>';
+  });
+  h += '</tbody></table>';
+  if (o.lineNote) h += '<div class="cmp-note">' + esc(o.lineNote) + '</div>';
+  h += '</div></section></div>';
+
+  // booking form
+  h += renderBooking(o);
+
+  // activity
+  h += '<section class="panel" aria-labelledby="act-h"><div class="panel-head"><h2 id="act-h">Activity</h2></div><ul class="acts">';
+  o.activity.forEach(function(a){ h += '<li class="' + (a[2] ? "you" : "") + '"><span class="t">' + esc(a[0]) + '</span><span class="x">' + esc(a[1]) + '</span></li>'; });
+  h += '</ul></section>';
+  h += '</div>';
+  return h;
+}
+function passCount(o){ return o.checklist.filter(function(c){ return c[0] === "pass" || c[0] === "na" || c[0] === "info"; }).length; }
+function markFor(m){
+  if (m === "yes") return '<span class="mark yes" title="Matches">✓</span><span class="sr">Matches</span>';
+  if (m === "amount") return '<span class="mark amount" title="Matched by amount">✓</span><span class="sr">Matched by amount</span>';
+  if (m === "no") return '<span class="mark no" title="Differs">≠</span><span class="sr">Differs</span>';
+  return '<span class="mark na" aria-hidden="true">–</span><span class="sr">Not compared</span>';
+}
+
+function renderBooking(o){
+  if (!o.booking){
+    return '<section class="panel"><div class="panel-head"><h2>Draft Booking Form</h2></div><div class="panel-body"><p class="lede">No Booking Form is drafted: it needs the quote to be found first.</p></div></section>';
+  }
+  var v = bookingValues(o), e = o.edits || {};
+  var locked = !(o.status === "ready" || o.status === "review");
+  function fld(key, label, html, wide){
+    var ed = e[key] != null;
+    return '<div class="fld' + (ed ? ' edited' : '') + (wide ? ' wide' : '') + '"><label for="f-' + key + '">' + label + (ed ? '<span class="edited-pill">Edited</span>' : '') + '</label>' + html + '</div>';
+  }
+  function ro(label, val){ return '<div class="fld"><span class="lbl">' + label + '</span><div class="val">' + esc(val) + '</div></div>'; }
+  var h = '<section class="panel" aria-labelledby="bf-h"><div class="panel-head"><h2 id="bf-h">Draft Booking Form</h2><span class="aside">' +
+          (locked ? 'Sent to Salesforce' : 'Edit anything before approving') + '</span></div><div class="panel-body"><div class="bf">';
+  h += ro("Booking Form", v.name);
+  h += ro("Opportunity", v.opportunity);
+  h += ro("PO number", v.po);
+  h += ro("F5 quote", v.quote);
+  if (locked){
+    h += ro("Amount (USD)", fmt(Number(v.amount)));
+    h += ro("Sales order type", v.orderType);
+    h += ro("Distributor", v.distributor);
+    h += ro("Reseller", v.reseller);
+  } else {
+    h += fld("amount","Amount (USD)",'<input id="f-amount" type="number" step="0.01" inputmode="decimal" value="' + esc(v.amount) + '" data-edit="amount">');
+    h += fld("orderType","Sales order type",'<select id="f-orderType" data-edit="orderType">' + ["Standard","P+I Booking Form","Zuora Sales Order"].map(function(x){ return '<option' + (x === v.orderType ? ' selected' : '') + '>' + x + '</option>'; }).join("") + '</select>');
+    h += fld("distributor","Distributor",'<input id="f-distributor" type="text" value="' + esc(v.distributor) + '" data-edit="distributor">');
+    h += fld("reseller","Reseller",'<input id="f-reseller" type="text" value="' + esc(v.reseller) + '" data-edit="reseller">');
+  }
+  h += ro("Stage when created", "In Process by SOS");
+  h += ro("Order issues", v.issues ? "Yes, flagged items reviewed by SOS" : "None");
+  v.notes.forEach(function(n,i){
+    var k = "note" + i;
+    if (locked) h += '<div class="fld wide"><span class="lbl">' + esc(n.title) + '</span><div class="val" style="font-weight:500;white-space:pre-wrap">' + esc(n.body) + '</div></div>';
+    else h += fld(k, esc(n.title), '<textarea id="f-' + k + '" data-edit="' + k + '">' + esc(n.body) + '</textarea>', true);
+  });
+  h += '</div><div class="bf-foot"><button type="button" class="btn btn-small" data-payload aria-expanded="' + (state.showPayload ? "true" : "false") + '">' +
+       (state.showPayload ? "Hide" : "Show") + ' what gets sent to Salesforce</button>' +
+       (editedCount(o) ? '<span class="mut" style="font-size:13.5px">' + editedCount(o) + ' field' + (editedCount(o) > 1 ? 's' : '') + ' edited</span>' : '') + '</div>';
+  if (state.showPayload) h += '<pre class="payload" id="payload">' + esc(JSON.stringify(payloadFor(o), null, 2)) + '</pre>';
+  h += '</div></section>';
+  return h;
+}
+
+function renderResult(o){
+  var r = o.result;
+  if (r.type === "booked"){
+    return '<div class="result" role="status"><h3>' + ICON.pass + 'Booking Form ' + esc(r.name) + ' created</h3>' +
+      '<dl><dt>Approved by</dt><dd>' + esc(r.by) + '</dd><dt>Approved at</dt><dd>' + esc(r.at) + '</dd><dt>Salesforce record</dt><dd>' + esc(r.recordId) + '</dd>' +
+      '<dt>Stage</dt><dd>In Process by SOS</dd><dt>Notes to RO attached</dt><dd>' + r.notes + '</dd>' + (r.note ? '<dt>Reviewer note</dt><dd style="font-weight:500">' + esc(r.note) + '</dd>' : '') + '</dl>' +
+      '<p class="sim">Simulated in this prototype: no Salesforce record was written.</p></div>';
+  }
+  return '<div class="result" role="status"><h3>' + ICON.info + 'Returned to ' + esc(o.from) + '</h3><dl><dt>Sent by</dt><dd>' + esc(r.by) + '</dd><dt>Sent at</dt><dd>' + esc(r.at) + '</dd><dt>Items requested</dt><dd>' + r.items + '</dd></dl>' +
+    '<p class="sim">Simulated in this prototype: no email was sent.</p></div>';
+}
+
+/* --------------------------------------------------------------- modals */
+var lastFocus = null;
+function openModal(html, onMount){
+  lastFocus = document.activeElement;
+  var root = document.getElementById("modal-root");
+  root.innerHTML = '<div class="scrim" data-scrim><div class="modal enter" role="dialog" aria-modal="true" aria-labelledby="m-title">' + html + '</div></div>';
+  var m = root.querySelector(".modal");
+  if (onMount) onMount(m);
+  var first = m.querySelector("input,textarea,button.btn-primary,button");
+  if (first) first.focus();
+}
+function closeModal(){
+  document.getElementById("modal-root").innerHTML = "";
+  if (lastFocus && document.body.contains(lastFocus)) lastFocus.focus();
+}
+
+function approveFlow(o){
+  var v = bookingValues(o);
+  var needNote = o.flags.length > 0;
+  var savedName = "";
+  try { savedName = localStorage.getItem(KEY + "-name") || ""; } catch(e){}
+  var html = '<div class="modal-head"><h2 id="m-title">Approve and create Booking Form</h2><p>This creates the Booking Form in Salesforce with the values below.</p></div><div class="modal-body">' +
+    '<dl class="summary"><dt>PO</dt><dd>' + esc(o.po) + ' from ' + esc(o.from) + '</dd><dt>Amount</dt><dd>' + fmt(Number(v.amount)) + '</dd><dt>Opportunity</dt><dd>' + esc(v.opportunity) + '</dd>' +
+    '<dt>Notes to RO</dt><dd>' + v.notes.length + '</dd><dt>Fields you edited</dt><dd>' + editedCount(o) + '</dd></dl>' +
+    '<div class="fld"><label for="m-name">Approving as</label><input id="m-name" type="text" autocomplete="name" placeholder="Your name" value="' + esc(savedName) + '"><div class="req" id="m-name-req">Add your name so the record shows who approved it.</div></div>' +
+    '<div class="fld" style="margin-top:12px"><label for="m-note">Note for the record' + (needNote ? '' : ' (optional)') + '</label><textarea id="m-note" placeholder="' + (needNote ? 'What you checked on the flagged items' : 'Anything RO should know') + '"></textarea>' +
+    (needNote ? '<div class="req" id="m-note-req">A note is required because this order had flagged items.</div>' : '') + '</div>' +
+    '</div><div class="modal-foot"><button type="button" class="btn" data-cancel>Cancel</button><button type="button" class="btn btn-primary" data-confirm>Create Booking Form</button></div>';
+  openModal(html, function(m){
+    m.querySelector("[data-cancel]").addEventListener("click", closeModal);
+    m.querySelector("[data-confirm]").addEventListener("click", function(){
+      var name = m.querySelector("#m-name").value.trim();
+      var note = m.querySelector("#m-note").value.trim();
+      var ok = true;
+      m.querySelector("#m-name-req").classList.toggle("show", !name); if (!name) ok = false;
+      if (needNote){ m.querySelector("#m-note-req").classList.toggle("show", !note); if (!note) ok = false; }
+      if (!ok){ (name ? m.querySelector("#m-note") : m.querySelector("#m-name")).focus(); return; }
+      try { localStorage.setItem(KEY + "-name", name); } catch(e){}
+      runSteps(m, o, name, note);
+    });
+  });
+}
+
+function runSteps(m, o, name, note){
+  var v = bookingValues(o);
+  var steps = ["Creating the Booking Form in Salesforce", "Attaching " + v.notes.length + " Note" + (v.notes.length === 1 ? "" : "s") + " to RO", "Recording who approved it"];
+  m.innerHTML = '<div class="modal-head"><h2 id="m-title">Creating Booking Form</h2></div><div class="modal-body"><ul class="steps">' +
+    steps.map(function(s,i){ return '<li data-step="' + i + '"><span class="dot" aria-hidden="true"></span>' + esc(s) + '</li>'; }).join("") + '</ul></div>';
+  var reduce = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  var delay = reduce ? 120 : 650;
+  var i = 0;
+  function tick(){
+    var lis = m.querySelectorAll("[data-step]");
+    for (var k=0;k<lis.length;k++){ lis[k].className = k < i ? "done" : (k === i ? "on" : ""); }
+    if (i < steps.length){ i++; setTimeout(tick, delay); }
+    else {
+      var rec = "a1s" + Math.random().toString(36).slice(2, 10).toUpperCase() + "QAM";
+      var at = now();
+      o.result = {type:"booked", name:v.name, by:name, at:at, recordId:rec, notes:v.notes.length, note:note};
+      o.activity.push([at, "Approved by " + name + "; Booking Form " + v.name + " created", true]);
+      o.status = "booked"; save();
+      m.innerHTML = '<div class="modal-head"><h2 id="m-title">Booking Form created</h2><p>' + esc(v.name) + ' is in Salesforce, stage In Process by SOS.</p></div>' +
+        '<div class="modal-body"><dl class="summary"><dt>Amount</dt><dd>' + fmt(Number(v.amount)) + '</dd><dt>Approved by</dt><dd>' + esc(name) + '</dd><dt>Record</dt><dd>' + rec + '</dd></dl>' +
+        '<p class="sim" style="margin:0">Simulated in this prototype: no Salesforce record was written.</p></div>' +
+        '<div class="modal-foot"><button type="button" class="btn" data-stay>View this order</button><button type="button" class="btn btn-primary" data-next>Back to all orders</button></div>';
+      m.querySelector("[data-stay]").addEventListener("click", function(){ closeModal(); render(); });
+      m.querySelector("[data-next]").addEventListener("click", function(){ closeModal(); go({name:"queue"}); toast("Booking Form " + v.name + " created"); });
+      m.querySelector("[data-next]").focus();
+    }
+  }
+  tick();
+}
+
+function resellerEmail(o){
+  var items = o.flags.filter(function(f){ return f.reseller; }).map(function(f){ return "  - " + f.reseller; });
+  var subj = "PO " + o.po + ": details needed before we can book it";
+  var body = "Hello " + o.from + " team,\n\nThank you for purchase order " + o.po + (o.quote ? " against quote " + o.quote : "") + ". Before we can book it, we need:\n\n" +
+    (items.length ? items.join("\n") : "  - (No reseller-facing items. Add what you need from them.)") +
+    "\n\nPlease reply to this email with the details, or send a revised PO.\n\nThank you,\nF5 Sales Operations";
+  return {subject:subj, body:body, count:items.length};
+}
+
+function returnFlow(o){
+  var em = resellerEmail(o);
+  var savedName = ""; try { savedName = localStorage.getItem(KEY + "-name") || ""; } catch(e){}
+  var html = '<div class="modal-head"><h2 id="m-title">Return to ' + esc(o.from) + '</h2><p>Drafted from the flagged items. Internal decisions, like Inco Terms approvals, are left out.</p></div><div class="modal-body">' +
+    '<dl class="email-meta"><dt>To</dt><dd>' + esc(o.from) + ' order desk</dd><dt>Subject</dt><dd>' + esc(em.subject) + '</dd></dl>' +
+    '<label class="sr" for="m-email">Email body</label><textarea id="m-email" class="email" style="width:100%;min-height:230px;font:inherit;line-height:1.55">' + esc(em.body) + '</textarea>' +
+    '<div class="fld" style="margin-top:12px"><label for="m-name">Sending as</label><input id="m-name" type="text" placeholder="Your name" value="' + esc(savedName) + '"><div class="req" id="m-name-req">Add your name so the record shows who returned it.</div></div>' +
+    '</div><div class="modal-foot"><button type="button" class="btn" data-cancel>Cancel</button><button type="button" class="btn" data-copy>Copy email</button><button type="button" class="btn btn-primary" data-send>Mark as returned</button></div>';
+  openModal(html, function(m){
+    m.querySelector("[data-cancel]").addEventListener("click", closeModal);
+    m.querySelector("[data-copy]").addEventListener("click", function(){
+      var ta = m.querySelector("#m-email"), text = "Subject: " + em.subject + "\n\n" + ta.value;
+      var done = function(){ toast("Email copied"); };
+      try {
+        if (navigator.clipboard && navigator.clipboard.writeText){ navigator.clipboard.writeText(text).then(done, function(){ ta.select(); document.execCommand("copy"); done(); }); }
+        else { ta.select(); document.execCommand("copy"); done(); }
+      } catch(e){ toast("Select the text and copy it"); }
+    });
+    m.querySelector("[data-send]").addEventListener("click", function(){
+      var name = m.querySelector("#m-name").value.trim();
+      m.querySelector("#m-name-req").classList.toggle("show", !name);
+      if (!name){ m.querySelector("#m-name").focus(); return; }
+      try { localStorage.setItem(KEY + "-name", name); } catch(e){}
+      var at = now();
+      o.result = {type:"returned", by:name, at:at, items:em.count};
+      o.activity.push([at, "Returned to " + o.from + " by " + name, true]);
+      o.status = "returned"; save();
+      closeModal(); go({name:"queue"}); toast("PO " + o.po + " returned to " + o.from);
+    });
+  });
+}
+
+/* --------------------------------------------------------------- render */
+function render(){
+  var app = document.getElementById("app");
+  if (state.view.name === "detail"){
+    var o = byId(state.view.id);
+    if (!o){ state.view = {name:"queue"}; return render(); }
+    app.innerHTML = renderDetail(o);
+  } else {
+    app.innerHTML = renderQueue();
+  }
+}
+function go(view){
+  state.view = view; state.showPayload = false; save(); render();
+  window.scrollTo(0, 0);
+  var t = document.getElementById(view.name === "detail" ? "d-title" : "app");
+  if (t) t.focus({preventScroll:true});
+}
+
+document.addEventListener("click", function(ev){
+  var t = ev.target.closest ? ev.target.closest("[data-open],[data-back],[data-review],[data-unreview],[data-approve],[data-return],[data-payload],[data-scrim]") : null;
+  if (!t) return;
+  if (t.hasAttribute("data-scrim")){ if (ev.target === t) closeModal(); return; }
+  var o = state.view.name === "detail" ? byId(state.view.id) : null;
+  if (t.hasAttribute("data-open")){ go({name:"detail", id:t.getAttribute("data-open")}); return; }
+  if (t.hasAttribute("data-back")){ go({name:"queue"}); return; }
+  if (!o) return;
+  if (t.hasAttribute("data-review")){
+    var id = t.getAttribute("data-review");
+    if (o.reviewed.indexOf(id) === -1){ o.reviewed.push(id); o.activity.push([now(), "Marked reviewed: " + o.flags.filter(function(f){return f.id===id;})[0].title, true]); }
+    save(); render();
+    var nxt = document.querySelector("[data-review]") || document.querySelector("[data-approve]:not([disabled])");
+    if (nxt) nxt.focus();
+    return;
+  }
+  if (t.hasAttribute("data-unreview")){
+    var uid = t.getAttribute("data-unreview");
+    o.reviewed = o.reviewed.filter(function(x){ return x !== uid; }); save(); render();
+    var b = document.querySelector('[data-review="' + uid + '"]'); if (b) b.focus();
+    return;
+  }
+  if (t.hasAttribute("data-approve")){ if (!t.disabled) approveFlow(o); return; }
+  if (t.hasAttribute("data-return")){ returnFlow(o); return; }
+  if (t.hasAttribute("data-payload")){
+    state.showPayload = !state.showPayload; render();
+    var p = document.querySelector("[data-payload]"); if (p) p.focus();
+    return;
+  }
+});
+
+document.addEventListener("change", function(ev){
+  var el = ev.target; if (!el.getAttribute) return;
+  var key = el.getAttribute("data-edit"); if (!key) return;
+  var o = byId(state.view.id); if (!o) return;
+  var orig;
+  if (key === "amount") orig = o.booking.amount;
+  else if (key.indexOf("note") === 0) orig = o.notes[Number(key.slice(4))].body;
+  else orig = o.booking[key];
+  var val = key === "amount" ? (el.value === "" ? null : Math.round(Number(el.value) * 100) / 100) : el.value;
+  if (val === null || val === orig || String(val) === String(orig)) delete o.edits[key];
+  else { o.edits[key] = val; o.activity.push([now(), "Edited " + (key === "amount" ? "amount" : key.indexOf("note") === 0 ? o.notes[Number(key.slice(4))].title : key.replace(/([A-Z])/g," $1").toLowerCase()), true]); }
+  save();
+  var y = window.scrollY; render(); window.scrollTo(0, y);
+  var again = document.getElementById("f-" + key); if (again) again.focus();
+});
+
+document.addEventListener("keydown", function(ev){
+  if (ev.key === "Escape" && document.querySelector(".scrim") && !document.querySelector(".steps")) closeModal();
+  if (ev.key === "Tab"){
+    var m = document.querySelector(".modal"); if (!m) return;
+    var f = m.querySelectorAll("button,input,textarea,select,[tabindex]:not([tabindex='-1'])");
+    if (!f.length) return;
+    var first = f[0], last = f[f.length - 1];
+    if (ev.shiftKey && document.activeElement === first){ last.focus(); ev.preventDefault(); }
+    else if (!ev.shiftKey && document.activeElement === last){ first.focus(); ev.preventDefault(); }
+  }
+});
+
+document.getElementById("reset").addEventListener("click", function(){
+  try { localStorage.removeItem(KEY); } catch(e){}
+  state = fresh(); closeModal(); go({name:"queue"}); toast("Demo reset");
+});
+
+render();
+})();
+</script>
+</body>
+</html>

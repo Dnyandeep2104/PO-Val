@@ -322,7 +322,8 @@ def generate_dashboard_html(manager: ApprovalManager) -> str:
             <h1>F5 Sales Operations (SOS) — Order Review & Booking Portal</h1>
             <div style="font-size: 12px; opacity: 0.8; margin-top: 4px;">Automated Validation, Exception Routing, and 1-Click Salesforce Booking</div>
         </div>
-        <div>
+        <div style="display: flex; align-items: center; gap: 10px;">
+            <a href="/prototype" style="background: #ff3a50; color: #fff; text-decoration: none; padding: 6px 12px; border-radius: 4px; font-size: 12px; font-weight: bold;">✨ Interactive SOS Prototype</a>
             <span class="env-badge">Local Sandbox Mode (poclab)</span>
         </div>
     </div>
@@ -445,6 +446,17 @@ class SOSPortalHandler(http.server.SimpleHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(content)
             return
+
+        if parsed.path in ("/prototype", "/prototype.html", "/demo"):
+            proto_file = Path(__file__).parent / "sos_review_prototype.html"
+            if proto_file.exists():
+                content = proto_file.read_bytes()
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Content-Length", str(len(content)))
+                self.end_headers()
+                self.wfile.write(content)
+                return
 
         if parsed.path == "/favicon.ico":
             self.send_response(204)
