@@ -978,8 +978,8 @@ textarea.modern-input {
     <div class="nav-divider"></div>
     <div class="nav-links">
       <button type="button" class="nav-link-btn active" id="navQueueBtn">📥 Inbound Queue</button>
-      <button type="button" class="nav-link-btn" onclick="alert('Viewing 38 standard SOS validation rules configured in engine.')">🛡️ Policy Rules (38)</button>
-      <button type="button" class="nav-link-btn" onclick="alert('Connected to Snowflake PRD_ENT_RAW.SALESFORCE tables (Replica sync latency: 12s).')">⚡ Snowflake Sync</button>
+      <button type="button" class="nav-link-btn" id="navChecklistBtn">📋 SOS Checklist (11 items)</button>
+      <button type="button" class="nav-link-btn" id="navSnowflakeBtn">⚡ Snowflake Sync</button>
     </div>
   </div>
 
@@ -992,7 +992,7 @@ textarea.modern-input {
     <div class="user-chip">
       <div class="user-avatar-circle">AH</div>
       <div class="user-details">
-        <span class="user-name">Amy Higgins</span>
+        <span class="user-name">Chinmay</span>
         <span class="user-role">SOS Lead Specialist</span>
       </div>
     </div>
@@ -1017,18 +1017,30 @@ textarea.modern-input {
       id: "ingram", po: "4501234567", from: "Ingram Micro Inc", channel: "Distributor",
       file: "Ingram_PO_4501234567.pdf", received: "08:12 AM", poDate: "Oct 5, 2026",
       quote: "F5Q-00972766", opportunity: "006do00000K8sFsAAJ", status: "ready",
-      summary: "100% Match with CPQ Quote F5Q-00972766. Zero variances, all 11 checklist rules passed cleanly.",
+      summary: "All 11 SOS checklist items passed cleanly. Quote F5Q-00972766 matched 100%.",
       checklist: [
-        ["pass", "F5 Corporate Entity Verification", "Issued to F5, Inc. (CORP Seattle WA)"],
-        ["pass", "Purchase Order Identifier", "Valid unique PO# 4501234567"],
-        ["pass", "Commercial Credit Terms", "NET 30 matches account master"],
-        ["pass", "Single Bill-To Entity", "Ingram Micro Inc. (Tax ID verified)"],
-        ["pass", "Physical Ship-To Verification", "1 Contoso Way, Seattle WA with site contact"],
-        ["pass", "End User Customer Details", "Contoso Corporation (Matches quote end-user)"],
-        ["pass", "Accepted IncoTerms", "FCA Ship Point (Accepted standard)"],
-        ["pass", "Catalog SKU Validation", "2 hardware/license lines verified in pricebook"],
-        ["pass", "Mathematical Integrity Check", "Lines sum to $24,242.10 perfectly"],
-        ["pass", "Freight & Carrier Instructions", "Carrier: FedEx Ground (Account on PO)"]
+        ["pass", "1. F5 Entity", "Issued to F5, Inc. (CORP Seattle WA)"],
+        ["pass", "2. PO Number", "PO# 4501234567 (Valid unique identifier)"],
+        ["pass", "3. Payment Terms", "NET 30 (Matches Bill To account master terms)"],
+        ["pass", "4. Bill To", "Ingram Micro Inc. (Tax ID verified, single entity)"],
+        ["pass", "5. Ship To", "1 Contoso Way, Seattle WA with site contact phone"],
+        ["pass", "6. End User", "Contoso Corporation (Declared entity & address)"],
+        ["pass", "7. Reseller", "Ingram Micro (Authorized distributor channel)"],
+        ["pass", "8. Inco Terms", "FCA Ship Point (Standard accepted terms)"],
+        ["pass", "9. Product Information", "2 SKUs with Qty & Unit Prices verified on PO"],
+        ["pass", "10. PO Total", "$24,242.10 (Lines sum to total mathematically)"],
+        ["pass", "11. Shipping Details", "Carrier: FedEx Ground (Account # on PO)"]
+      ],
+      quoteChecks: [
+        ["pass", "CPQ Quote Exists", "F5Q-00972766 active in Snowflake CPQ replicas"],
+        ["pass", "Opportunity Resolved", "Linked to Opp 006do00000K8sFsAAJ"],
+        ["pass", "Quote Not Expired", "Quote valid through Nov 30, 2026"],
+        ["pass", "Bill-To Matches Account", "Ingram Micro matches Salesforce Account"],
+        ["pass", "End User Matches Quote", "Contoso Corporation matches quote end user"],
+        ["pass", "Currency ISO Match", "USD matches quote currency"],
+        ["pass", "Line Items & Pricing Match", "2 of 2 lines match quote SKUs and prices"],
+        ["pass", "Order Total Reconciliation", "Exact match: $24,242.10 (Variance: $0.00)"],
+        ["pass", "Duplicate PO Check", "No previous booking in Salesforce"]
       ],
       flags: [],
       compare: [
@@ -1054,18 +1066,29 @@ textarea.modern-input {
       id: "wwt", po: "4527709", from: "World Wide Technology", channel: "Reseller Partner",
       file: "wwt_po_4527709.pdf", received: "08:47 AM", poDate: "Nov 4, 2025",
       quote: "F5Q-01083998", opportunity: "006Po00000f1Gr7IAE", status: "review",
-      summary: "IncoTerms 'FOB' flagged. All hardware line items, SKUs, and pricing reconcile 100%.",
+      summary: "9 of 11 SOS checklist items passed (2 require SOS review). Quote F5Q-01083998 matched 100%.",
       checklist: [
-        ["pass", "F5 Corporate Entity Verification", "Issued to F5 Networks Inc."],
-        ["pass", "Purchase Order Identifier", "Valid unique PO# 4527709"],
-        ["pass", "Commercial Credit Terms", "NET 60"],
-        ["pass", "Single Bill-To Entity", "World Wide Technology LLC"],
-        ["warn", "Ship-To Contact Email", "Physical address & phone present; email missing"],
-        ["pass", "End User Customer Details", "GMF NA US Management Company (Verified)"],
-        ["warn", "IncoTerms Compliance", "'FOB' specified; standard is FCA Origin. SOS sign-off needed."],
-        ["pass", "Catalog SKU Validation", "F5-UPG-SFP28-SR"],
-        ["pass", "Mathematical Integrity Check", "Total $3,749.92 reconciles exactly"],
-        ["pass", "Carrier Details", "Standard WWT logistics"]
+        ["pass", "1. F5 Entity", "Issued to F5 Networks Inc."],
+        ["pass", "2. PO Number", "PO# 4527709 (Valid unique identifier)"],
+        ["pass", "3. Payment Terms", "NET 60"],
+        ["pass", "4. Bill To", "World Wide Technology LLC (Single entity)"],
+        ["warn", "5. Ship To", "Physical address & phone valid; email omitted on PO"],
+        ["pass", "6. End User", "GMF NA US Management Company (Verified)"],
+        ["pass", "7. Reseller", "World Wide Technology (Authorized reseller)"],
+        ["warn", "8. Inco Terms", "'FOB' specified; standard is FCA Origin. SOS sign-off needed."],
+        ["pass", "9. Product Information", "SKU F5-UPG-SFP28-SR, Qty 4, Unit Price $937.48"],
+        ["pass", "10. PO Total", "$3,749.92 (Lines sum to total mathematically)"],
+        ["pass", "11. Shipping Details", "Standard WWT logistics instructions"]
+      ],
+      quoteChecks: [
+        ["pass", "CPQ Quote Exists", "F5Q-01083998 active in Snowflake CPQ replicas"],
+        ["pass", "Opportunity Resolved", "Linked to Opp 006Po00000f1Gr7IAE"],
+        ["pass", "Quote Not Expired", "Quote valid and current"],
+        ["pass", "Bill-To Matches Account", "World Wide Technology LLC matches Account"],
+        ["pass", "Currency ISO Match", "USD matches quote currency"],
+        ["pass", "Line Items & Pricing Match", "100% SKU and line price match ($3,749.92)"],
+        ["pass", "Order Total Reconciliation", "Exact match: $3,749.92 (Variance: $0.00)"],
+        ["pass", "Duplicate PO Check", "No previous booking in Salesforce"]
       ],
       flags: [
         { id: "w1", title: "IncoTerms 'FOB' requires SOS acknowledgement", detail: "F5 standard policy is FCA Origin. Non-destination FOB is acceptable with SOS notation." },
@@ -1092,17 +1115,29 @@ textarea.modern-input {
       id: "dell", po: "PO706839", from: "Dell USA LP", channel: "Direct Enterprise",
       file: "PO706839.pdf", received: "09:40 AM", poDate: "May 8, 2025",
       quote: "F5Q-00972677", opportunity: "006Po00000efMf3IAE", status: "review",
-      summary: "$1,400.00 extra freight pass-through on PO Line 2. Hardware lines match quote perfectly.",
+      summary: "9 of 11 SOS checklist items passed (2 require SOS review). F5 Quote check flagged $1,400 unquoted freight.",
       checklist: [
-        ["pass", "F5 Corporate Entity Verification", "Issued to F5, Inc."],
-        ["pass", "Purchase Order Identifier", "Valid unique PO# PO706839"],
-        ["pass", "Commercial Credit Terms", "NET 90"],
-        ["pass", "Single Bill-To Entity", "Dell USA LP"],
-        ["warn", "Ship-To Contact Phone", "Missing phone for Shiner Lab contact"],
-        ["warn", "End User Customer Details", "Dell internal lab usage (no external entity)"],
-        ["pass", "Accepted IncoTerms", "FCA Ship Point"],
-        ["pass", "Catalog SKU Validation", "Hardware lines match quote amount"],
-        ["fail", "Unquoted Line Item Found", "Line 2 has $1,400.00 freight not in CPQ Quote"]
+        ["pass", "1. F5 Entity", "Issued to F5, Inc."],
+        ["pass", "2. PO Number", "PO# PO706839 (Valid unique identifier)"],
+        ["pass", "3. Payment Terms", "NET 90"],
+        ["pass", "4. Bill To", "Dell USA LP (Single entity)"],
+        ["warn", "5. Ship To", "Physical address valid; Shiner Lab contact phone missing"],
+        ["warn", "6. End User", "Dell internal lab deployment (No separate End User entity)"],
+        ["pass", "7. Reseller", "Direct customer transaction (Reseller N/A)"],
+        ["pass", "8. Inco Terms", "FCA Ship Point (Accepted standard)"],
+        ["pass", "9. Product Information", "Part numbers, quantities, unit prices on PO"],
+        ["pass", "10. PO Total", "$74,844.80 stated on PO"],
+        ["pass", "11. Shipping Details", "Standard Dell logistics specified"]
+      ],
+      quoteChecks: [
+        ["pass", "CPQ Quote Exists", "F5Q-00972677 active in Snowflake CPQ replicas"],
+        ["pass", "Opportunity Resolved", "Linked to Opp 006Po00000efMf3IAE"],
+        ["pass", "Quote Not Expired", "Quote valid and current"],
+        ["pass", "Bill-To Matches Account", "Dell USA LP matches Account"],
+        ["warn", "Line Items & Pricing Match", "Hardware line matches ($73,444.80); Line 2 has $1,400 unquoted freight"],
+        ["warn", "Order Total Reconciliation", "PO Total $74,844.80 vs Quote $73,444.80 (+$1,400.00 freight variance)"],
+        ["pass", "Currency ISO Match", "USD matches quote currency"],
+        ["pass", "Duplicate PO Check", "No previous booking in Salesforce"]
       ],
       flags: [
         { id: "d1", title: "$1,400.00 freight pass-through charge on PO", detail: "PO includes $1,400 shipping charges. Book at Quote hardware total ($73,444.80) and attach RO Note." },
@@ -1130,16 +1165,29 @@ textarea.modern-input {
       id: "paypal", po: "5100098997", from: "PayPal Inc", channel: "Direct Enterprise",
       file: "PayPal_PO_5100098997.pdf", received: "09:15 AM", poDate: "Jun 17, 2025",
       quote: "F5Q-00986557", opportunity: "006Po00000bh75lIAA", status: "review",
-      summary: "Custom customer part numbers matched to CPQ by pricing ($67,081.60). Destination terms flagged.",
+      summary: "8 of 11 SOS checklist items passed (3 require SOS review). F5 Quote checks matched lines by amount.",
       checklist: [
-        ["pass", "F5 Corporate Entity Verification", "Issued to F5, Inc."],
-        ["pass", "Purchase Order Identifier", "Valid unique PO# 5100098997"],
-        ["pass", "Commercial Credit Terms", "NET 45"],
-        ["pass", "Single Bill-To Entity", "PayPal Inc"],
-        ["warn", "Ship-To Contact Phone", "Contact name present; missing phone"],
-        ["warn", "End User Customer Details", "PayPal internal deployment"],
-        ["warn", "IncoTerms Compliance", "'FOB destination' requires SOS sign-off"],
-        ["pass", "Catalog SKU Validation", "Pricing matches CPQ quote exactly"]
+        ["pass", "1. F5 Entity", "Issued to F5, Inc."],
+        ["pass", "2. PO Number", "PO# 5100098997 (Valid unique identifier)"],
+        ["pass", "3. Payment Terms", "NET 45"],
+        ["pass", "4. Bill To", "PayPal Inc (Single entity)"],
+        ["warn", "5. Ship To", "Contact name present; missing phone number"],
+        ["warn", "6. End User", "PayPal internal infrastructure deployment"],
+        ["pass", "7. Reseller", "Direct customer transaction (Reseller N/A)"],
+        ["warn", "8. Inco Terms", "'FOB destination' specified; requires SOS sign-off"],
+        ["pass", "9. Product Information", "Customer part numbers mapped to quote lines"],
+        ["pass", "10. PO Total", "$67,081.60 (Lines sum to total mathematically)"],
+        ["pass", "11. Shipping Details", "Standard shipping instructions specified"]
+      ],
+      quoteChecks: [
+        ["pass", "CPQ Quote Exists", "F5Q-00986557 active in Snowflake CPQ replicas"],
+        ["pass", "Opportunity Resolved", "Linked to Opp 006Po00000bh75lIAA"],
+        ["pass", "Quote Not Expired", "Quote valid and current"],
+        ["pass", "Bill-To Matches Account", "PayPal Inc matches Account"],
+        ["pass", "Line Items & Pricing Match", "Lines reconciled by pricing amounts ($63,148.43 + $3,933.17)"],
+        ["pass", "Order Total Reconciliation", "Exact match: $67,081.60 (Variance: $0.00)"],
+        ["pass", "Currency ISO Match", "USD matches quote currency"],
+        ["pass", "Duplicate PO Check", "No previous booking in Salesforce"]
       ],
       flags: [
         { id: "p1", title: "Destination IncoTerms 'FOB destination'", detail: "F5 standard policy requires SOS acknowledgement for destination terms." }
@@ -1165,14 +1213,27 @@ textarea.modern-input {
       id: "synnex", po: "TD-00000-Z", from: "TD SYNNEX Corporation", channel: "Distributor",
       file: "TD_SYNNEX_PO.pdf", received: "Yesterday", poDate: "Mar 15, 2026",
       quote: "F5Q-99999999", opportunity: "", status: "return",
-      summary: "Referenced quote F5Q-99999999 does not exist in F5 CPQ or Snowflake records.",
+      summary: "All 11 SOS checklist items passed on PO document, but F5 Quote check failed (Quote not found in CPQ).",
       checklist: [
-        ["pass", "F5 Corporate Entity Verification", "Issued to F5, Inc."],
-        ["pass", "Purchase Order Identifier", "Valid unique PO# TD-00000-Z"],
-        ["pass", "Commercial Credit Terms", "NET 45"],
-        ["pass", "Single Bill-To Entity", "TD SYNNEX Corporation"],
-        ["pass", "Physical Ship-To Verification", "Complete physical address and contact"],
-        ["fail", "CPQ Quote Validation", "Quote F5Q-99999999 NOT FOUND in F5 system"]
+        ["pass", "1. F5 Entity", "Issued to F5, Inc."],
+        ["pass", "2. PO Number", "PO# TD-00000-Z (Valid unique identifier)"],
+        ["pass", "3. Payment Terms", "NET 45"],
+        ["pass", "4. Bill To", "TD SYNNEX Corporation (Single entity)"],
+        ["pass", "5. Ship To", "1 Contoso Way, Seattle WA with site contact"],
+        ["pass", "6. End User", "Contoso Corporation (Complete details)"],
+        ["pass", "7. Reseller", "TD SYNNEX (Authorized distributor channel)"],
+        ["pass", "8. Inco Terms", "EXW (Accepted standard)"],
+        ["pass", "9. Product Information", "2 SKUs with Qty & Unit Prices verified on PO"],
+        ["pass", "10. PO Total", "$24,242.10 stated on PO"],
+        ["pass", "11. Shipping Details", "UPS Ground Collect, Account # on PO"]
+      ],
+      quoteChecks: [
+        ["fail", "CPQ Quote Exists", "Quote F5Q-99999999 NOT FOUND in Snowflake CPQ replicas (404)"],
+        ["fail", "Opportunity Resolved", "Cannot link Opportunity without valid CPQ Quote"],
+        ["info", "Quote Expiration Check", "Pending quote resolution"],
+        ["info", "Bill-To Account Match", "Pending quote resolution"],
+        ["info", "Line Items Reconciliation", "Pending quote resolution"],
+        ["info", "Order Total Reconciliation", "Pending quote resolution"]
       ],
       flags: [
         { id: "s1", title: "CPQ Quote F5Q-99999999 does not exist", detail: "Polled Snowflake Enterprise Raw replicas for 24 hours. Reseller must provide valid CPQ Quote." }
@@ -1191,7 +1252,7 @@ textarea.modern-input {
   ];
 
   /* State Storage */
-  var STORAGE_KEY = "f5_sos_v3_state";
+  var STORAGE_KEY = "f5_sos_v4_state";
   var usdFormatter = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" });
   function fmtMoney(v) { return typeof v === "number" ? usdFormatter.format(v) : (v || ""); }
   function escapeHtml(str) { return String(str || "").replace(/[&<>"']/g, function(m) { return { "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[m]; }); }
@@ -1470,8 +1531,8 @@ textarea.modern-input {
     html += '<div class="content-card">';
     html += '<div style="padding:0 20px;background:#F8FAFC;border-bottom:1px solid var(--border-light);">';
     html += '<div class="stage-tab-nav">';
-    html += '<button type="button" class="stage-tab-btn ' + (activeTab === "reconcile" ? "active" : "") + '" data-detail-tab="reconcile">🔍 Side-by-Side CPQ Reconciliation</button>';
-    html += '<button type="button" class="stage-tab-btn ' + (activeTab === "checklist" ? "active" : "") + '" data-detail-tab="checklist">🛡️ SOS 38-Rule Checklist (' + o.checklist.length + ' Checked)</button>';
+    html += '<button type="button" class="stage-tab-btn ' + (activeTab === "reconcile" ? "active" : "") + '" data-detail-tab="reconcile">🔍 F5 Quote Reconciliation</button>';
+    html += '<button type="button" class="stage-tab-btn ' + (activeTab === "checklist" ? "active" : "") + '" data-detail-tab="checklist">📋 SOS Checklist (11 items)</button>';
     html += '</div></div>';
 
     html += '<div style="padding:20px;">';
@@ -1509,8 +1570,18 @@ textarea.modern-input {
       html += '</tbody></table></div>';
     }
 
-    // TAB B: 38-Rule Checklist
+    // TAB B: SOS Checklist (11 items) + F5 Quote Checks
     if (activeTab === "checklist") {
+      html += '<div style="background:#FFFFFF;border:1px solid var(--border-light);border-radius:var(--radius-md);margin-bottom:24px;overflow:hidden;box-shadow:var(--shadow-sm);">';
+      html += '<div style="padding:14px 20px;background:#F8FAFC;border-bottom:1px solid var(--border-light);display:flex;justify-content:space-between;align-items:center;">';
+      html += '<div>';
+      html += '<strong style="font-size:13.5px;color:var(--text-heading);">📋 SOS Checklist (11 items)</strong>';
+      html += '<div style="font-size:11.5px;color:var(--text-muted);margin-top:2px;">Revenue Operations PO Policy (Doc Owner: RevOps) • Evaluated on Vendor PO Document</div>';
+      html += '</div>';
+      var passCount = o.checklist.filter(function(c){return c[0]==="pass";}).length;
+      html += '<span class="status-pill ' + (passCount === 11 ? 'status-ready' : 'status-review') + '" style="font-size:11px;">' + passCount + ' of 11 Passed</span>';
+      html += '</div>';
+
       html += '<div style="display:flex;flex-direction:column;">';
       o.checklist.forEach(function(c) {
         var badge = '<div class="check-badge-icon check-pass">✓</div>';
@@ -1520,12 +1591,50 @@ textarea.modern-input {
 
         html += '<div class="check-item-row">';
         html += badge;
-        html += '<div>';
-        html += '<div style="font-weight:700;color:var(--text-heading);font-size:13px;">' + escapeHtml(c[1]) + '</div>';
+        html += '<div style="flex:1;">';
+        html += '<div style="display:flex;align-items:center;justify-content:space-between;">';
+        html += '<span style="font-weight:700;color:var(--text-heading);font-size:13px;">' + escapeHtml(c[1]) + '</span>';
+        html += '<span style="font-size:11px;font-weight:700;color:' + (c[0]==="pass" ? "var(--status-success)" : (c[0]==="warn" ? "var(--status-warning)" : "var(--status-danger)")) + ';">' + (c[0]==="pass" ? "PASS" : (c[0]==="warn" ? "SOS REVIEW" : "BLOCKER")) + '</span>';
+        html += '</div>';
         html += '<div style="font-size:12px;color:var(--text-muted);margin-top:2px;">' + escapeHtml(c[2]) + '</div>';
         html += '</div></div>';
       });
-      html += '</div>';
+      html += '</div></div>';
+
+      // F5 Quote Checks Section
+      if (o.quoteChecks && o.quoteChecks.length > 0) {
+        html += '<div style="background:#FFFFFF;border:1px solid var(--border-light);border-radius:var(--radius-md);overflow:hidden;box-shadow:var(--shadow-sm);">';
+        html += '<div style="padding:14px 20px;background:#F8FAFC;border-bottom:1px solid var(--border-light);display:flex;justify-content:space-between;align-items:center;">';
+        html += '<div>';
+        html += '<strong style="font-size:13.5px;color:var(--text-heading);">🛡️ F5 Quote Checks (CPQ / Snowflake Replicas)</strong>';
+        html += '<div style="font-size:11.5px;color:var(--text-muted);margin-top:2px;">Automated System Cross-Checks against Salesforce CPQ & Snowflake Database</div>';
+        html += '</div>';
+        var hasFail = o.quoteChecks.some(function(q){return q[0]==="fail";});
+        var hasWarn = o.quoteChecks.some(function(q){return q[0]==="warn";});
+        var quoteStatusPill = hasFail ? 'status-return' : (hasWarn ? 'status-review' : 'status-ready');
+        var quoteStatusLabel = hasFail ? 'Quote Blocked' : (hasWarn ? 'Variance Detected' : 'Verified');
+        html += '<span class="status-pill ' + quoteStatusPill + '" style="font-size:11px;">' + quoteStatusLabel + '</span>';
+        html += '</div>';
+
+        html += '<div style="display:flex;flex-direction:column;">';
+        o.quoteChecks.forEach(function(c) {
+          var badge = '<div class="check-badge-icon check-pass">✓</div>';
+          if (c[0] === "warn") badge = '<div class="check-badge-icon check-warn">!</div>';
+          else if (c[0] === "fail") badge = '<div class="check-badge-icon check-fail">✕</div>';
+          else if (c[0] === "info" || c[0] === "na") badge = '<div class="check-badge-icon check-info">–</div>';
+
+          html += '<div class="check-item-row">';
+          html += badge;
+          html += '<div style="flex:1;">';
+          html += '<div style="display:flex;align-items:center;justify-content:space-between;">';
+          html += '<span style="font-weight:700;color:var(--text-heading);font-size:13px;">' + escapeHtml(c[1]) + '</span>';
+          html += '<span style="font-size:11px;font-weight:700;color:' + (c[0]==="pass" ? "var(--status-success)" : (c[0]==="warn" ? "var(--status-warning)" : (c[0]==="fail" ? "var(--status-danger)" : "var(--text-muted)"))) + ';">' + (c[0]==="pass" ? "PASS" : (c[0]==="warn" ? "WARNING" : (c[0]==="fail" ? "FAILED" : "PENDING"))) + '</span>';
+          html += '</div>';
+          html += '<div style="font-size:12px;color:var(--text-muted);margin-top:2px;">' + escapeHtml(c[2]) + '</div>';
+          html += '</div></div>';
+        });
+        html += '</div></div>';
+      }
     }
 
     html += '</div></div></div>'; // End Left Stage
@@ -1581,7 +1690,7 @@ textarea.modern-input {
     html += '<div style="margin-bottom:8px;">• <strong>' + escapeHtml(o.received) + '</strong>: Email attachment received in SOS inbox via PowerAutomate.</div>';
     html += '<div style="margin-bottom:8px;">• <strong>' + escapeHtml(o.received) + '</strong>: Generic PDF parser extracted ' + o.lines.length + ' lines with 100% confidence.</div>';
     html += '<div style="margin-bottom:8px;">• <strong>' + escapeHtml(o.received) + '</strong>: Cross-referenced CPQ quote in Snowflake RAW replicas.</div>';
-    html += '<div>• <strong>' + escapeHtml(o.received) + '</strong>: Evaluated 38 SOS policy checklist rules.</div>';
+    html += '<div>• <strong>' + escapeHtml(o.received) + '</strong>: Evaluated SOS checklist (11 items) + F5 CPQ quote reconciliation checks.</div>';
     html += '</div></div>';
 
     html += '</div>'; // End Right Rail
@@ -1714,7 +1823,63 @@ textarea.modern-input {
     notifyToast("🔄 Demo reset to initial pristine state.");
   });
 
+  // Top Nav Checklist Button
+  var navChecklistBtn = document.getElementById("navChecklistBtn");
+  if (navChecklistBtn) {
+    navChecklistBtn.addEventListener("click", function() {
+      triggerChecklistReferenceModal();
+    });
+  }
+  var navSnowflakeBtn = document.getElementById("navSnowflakeBtn");
+  if (navSnowflakeBtn) {
+    navSnowflakeBtn.addEventListener("click", function() {
+      notifyToast("⚡ Connected to Snowflake PRD_ENT_RAW.SALESFORCE tables (Replica latency: 12s).");
+    });
+  }
+
   /* ---------------------------------------------------------------- MODALS */
+  function triggerChecklistReferenceModal() {
+    var modalHost = document.getElementById("modalHost");
+    var html = '<div class="modal-backdrop-blur">';
+    html += '<div class="modern-modal-card" style="max-width: 720px;">';
+    html += '<div class="modal-header-bar">';
+    html += '<h3>📋 SOS Purchase Order Checklist (11 items)</h3>';
+    html += '<button type="button" class="btn-close-modal" id="closeModalBtn">&times;</button>';
+    html += '</div>';
+    html += '<div class="modal-body-pad" style="max-height: 72vh; overflow-y: auto;">';
+    html += '<p style="margin-top:0; font-size:13px; color:var(--text-muted);"><strong>Doc Owner:</strong> Revenue Operations &bull; <strong>Source Reference:</strong> <code>Purchase_Order_Checklist_2025_Flex_Memphis</code> (7-Feb-2025). These 11 checkboxes evaluate the physical vendor purchase order document:</p>';
+    html += '<div style="display:flex; flex-direction:column; gap:10px; margin-top:14px;">';
+    var items = [
+      ["1. PO Issued to F5 Entity", "PO must be addressed to an authorized F5 entity: CORP, GSLLC, EMEA, or SG."],
+      ["2. PO Number", "Unique identifier present on document; prevents duplicate bookings."],
+      ["3. Payment Terms", "Must match or not exceed established terms defaulted in Bill To Account master."],
+      ["4. Bill To", "Clearly labeled legal entity name and address. Multiple names or BT addresses not accepted."],
+      ["5. Ship To", "Physical delivery address (PO Box rejected). First/Last Name, Email, and Phone required."],
+      ["6. End User", "Clearly labeled entity name and physical address. If absent, must be recorded in Booking RO Note."],
+      ["7. Reseller", "Verified for 2-tier channel / distributor orders. Skipped for direct customer sales."],
+      ["8. Inco Terms", "Acceptable: FCA Ship Point, Origin, EXW. Destination terms require prior SOS approval."],
+      ["9. Product Information", "SKU, Qty, and Unit Price. If not present on PO, valid CPQ Quote # is mandatory."],
+      ["10. PO Total", "Stated total amount must mathematically reconcile with extended line item prices."],
+      ["11. Shipping Details", "FedEx, UPS, or DHL: Carrier | Method | Carrier Account #. IOR required for international."]
+    ];
+    items.forEach(function(it) {
+      html += '<div style="background:#F8FAFC; border:1px solid var(--border-light); border-radius:var(--radius-sm); padding:10px 14px;">';
+      html += '<strong style="font-size:13px; color:var(--text-heading);">' + escapeHtml(it[0]) + '</strong>';
+      html += '<div style="font-size:12px; color:var(--text-muted); margin-top:2px;">' + escapeHtml(it[1]) + '</div>';
+      html += '</div>';
+    });
+    html += '</div>';
+    html += '<div style="margin-top:16px; padding:12px; background:#EFF6FF; border:1px solid #BFDBFE; border-radius:var(--radius-sm); font-size:12px; color:#1E40AF;">';
+    html += '<strong>Note on F5 Quote Checks:</strong> CPQ quote existence, opportunity linkage, pricebook matching, expiration dates, and billing account cross-referencing are executed as automated F5 system checks against Snowflake & Salesforce, and are tracked separately from the 11 vendor PO items.';
+    html += '</div>';
+    html += '</div>';
+    html += '<div class="modal-footer-bar">';
+    html += '<button type="button" class="btn-action-primary" id="cancelModalBtn">Close Reference</button>';
+    html += '</div></div></div>';
+    modalHost.innerHTML = html;
+    document.getElementById("closeModalBtn").onclick = closeModal;
+    document.getElementById("cancelModalBtn").onclick = closeModal;
+  }
   function triggerApproveModal(o) {
     var modalHost = document.getElementById("modalHost");
     var html = '<div class="modal-backdrop-blur">';
@@ -1736,7 +1901,7 @@ textarea.modern-input {
 
     html += '<div class="form-input-group">';
     html += '<label>SOS Approver Signature</label>';
-    html += '<input type="text" class="modern-input" id="approverNameField" value="Amy Higgins">';
+    html += '<input type="text" class="modern-input" id="approverNameField" value="Chinmay">';
     html += '</div>';
     html += '<div class="form-input-group">';
     html += '<label>Reviewer Audit Note (Optional)</label>';
