@@ -3,920 +3,961 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>F5 Sales Operations — PO Validation & Salesforce Booking Console</title>
+<title>F5 Sales Operations — PO Validation & Booking Workspace</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 <style>
 :root {
-  /* F5 & Salesforce Enterprise Design System Tokens */
-  --f5-navy: #002F6C;
-  --f5-navy-dark: #001E47;
-  --f5-blue: #0070D2;
-  --f5-blue-hover: #005FB2;
-  --f5-blue-light: #EBF5FE;
-  --f5-red: #E2231A;
-  --f5-red-dark: #BA1A12;
+  /* F5 Brand & Enterprise Color Palette */
+  --f5-navy-900: #0A1628;
+  --f5-navy-800: #0F233E;
+  --f5-navy-700: #163259;
+  --f5-blue-600: #0066FF;
+  --f5-blue-700: #0052CC;
+  --f5-blue-50: #EFF6FF;
+  --f5-red-500: #E11D48;
+  --f5-red-50: #FFF1F2;
   
-  --slds-bg: #F4F6F9;
-  --slds-card: #FFFFFF;
-  --slds-card-hover: #FAFBFD;
-  --slds-border: #D8DDE6;
-  --slds-border-subtle: #E5E9F0;
+  /* Slate & Neutral Surfaces */
+  --bg-app: #F8FAFC;
+  --surface-card: #FFFFFF;
+  --surface-subtle: #F1F5F9;
+  --border-light: #E2E8F0;
+  --border-strong: #CBD5E1;
   
-  --text-main: #182B49;
-  --text-muted: #54698D;
-  --text-subtle: #706E6B;
+  /* Typography */
+  --text-heading: #0F172A;
+  --text-body: #334155;
+  --text-muted: #64748B;
+  --text-subtle: #94A3B8;
   
-  --status-ok: #027A48;
-  --status-ok-bg: #ECFDF3;
-  --status-ok-border: #A6F4C5;
+  /* Functional Status Colors */
+  --status-success: #059669;
+  --status-success-bg: #ECFDF5;
+  --status-success-border: #A7F3D0;
   
-  --status-warn: #B54708;
-  --status-warn-bg: #FFFAEB;
-  --status-warn-border: #FEDF89;
+  --status-warning: #D97706;
+  --status-warning-bg: #FFFBEB;
+  --status-warning-border: #FDE68A;
   
-  --status-bad: #B42318;
-  --status-bad-bg: #FEF3F2;
-  --status-bad-border: #FECDCA;
+  --status-danger: #DC2626;
+  --status-danger-bg: #FEF2F2;
+  --status-danger-border: #FECACA;
   
-  --status-info: #026AA2;
+  --status-info: #0284C7;
   --status-info-bg: #F0F9FF;
-  --status-info-border: #B9E6FE;
+  --status-info-border: #BAE6FD;
   
-  --radius-sm: 4px;
-  --radius-md: 6px;
-  --radius-lg: 8px;
-  --shadow-sm: 0 1px 3px rgba(0,0,0,0.06), 0 1px 2px rgba(0,0,0,0.04);
-  --shadow-md: 0 4px 12px rgba(0,47,108,0.08), 0 1px 3px rgba(0,0,0,0.04);
-  --shadow-modal: 0 20px 48px -8px rgba(0, 30, 71, 0.28);
+  /* Shadows & Radius */
+  --radius-xs: 4px;
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+  --radius-xl: 18px;
+  
+  --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
+  --shadow-card: 0 4px 6px -1px rgba(15, 23, 42, 0.04), 0 2px 4px -2px rgba(15, 23, 42, 0.04);
+  --shadow-card-hover: 0 10px 15px -3px rgba(15, 23, 42, 0.08), 0 4px 6px -4px rgba(15, 23, 42, 0.03);
+  --shadow-modal: 0 25px 50px -12px rgba(15, 23, 42, 0.25);
 }
 
 *, *::before, *::after { box-sizing: border-box; }
 body {
   margin: 0;
-  background: var(--slds-bg);
-  color: var(--text-main);
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Inter", "Helvetica Neue", Arial, sans-serif;
+  background: var(--bg-app);
+  color: var(--text-body);
+  font-family: 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
   font-size: 13.5px;
-  line-height: 1.45;
+  line-height: 1.5;
   -webkit-font-smoothing: antialiased;
 }
 
-/* ---------------------------------------------------- GLOBAL APP HEADER */
-.global-header {
-  background: var(--f5-navy);
+/* ---------------------------------------------------------------- NAVBAR */
+.top-navbar {
+  background: var(--f5-navy-900);
   color: #FFFFFF;
-  padding: 0 24px;
-  height: 52px;
+  padding: 0 28px;
+  height: 60px;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  border-bottom: 2px solid var(--f5-red);
+  border-bottom: 2px solid var(--f5-red-500);
   position: sticky;
   top: 0;
   z-index: 100;
-  box-shadow: 0 2px 8px rgba(0, 20, 50, 0.2);
+  box-shadow: 0 4px 20px rgba(10, 22, 40, 0.15);
 }
-.header-left {
+.brand-area {
   display: flex;
   align-items: center;
-  gap: 20px;
+  gap: 16px;
 }
-.f5-logo-badge {
+.f5-logo-container {
   display: flex;
   align-items: center;
-  gap: 8px;
-  font-weight: 800;
-  font-size: 17px;
-  letter-spacing: -0.02em;
-  color: #FFFFFF;
+  gap: 10px;
+  text-decoration: none;
+  cursor: pointer;
 }
-.f5-ball {
-  width: 22px;
-  height: 22px;
-  background: var(--f5-red);
+.f5-symbol {
+  width: 28px;
+  height: 28px;
+  background: var(--f5-red-500);
   border-radius: 50%;
-  display: inline-flex;
+  display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 12px;
   font-weight: 900;
-  color: #FFF;
+  font-size: 14px;
+  color: #FFFFFF;
+  letter-spacing: -0.05em;
+  box-shadow: 0 2px 8px rgba(225, 29, 72, 0.4);
 }
-.app-divider {
-  width: 1px;
-  height: 24px;
-  background: rgba(255,255,255,0.2);
-}
-.app-title-block {
+.brand-title-wrap {
   display: flex;
   flex-direction: column;
 }
-.app-title {
-  font-size: 13.5px;
-  font-weight: 700;
+.brand-title {
+  font-size: 14px;
+  font-weight: 800;
   color: #FFFFFF;
-  letter-spacing: 0.01em;
+  letter-spacing: -0.01em;
 }
-.app-subtitle {
+.brand-subtitle {
   font-size: 11px;
-  color: rgba(255,255,255,0.7);
+  color: var(--text-subtle);
+  font-weight: 500;
 }
-
-.header-center {
+.nav-divider {
+  width: 1px;
+  height: 28px;
+  background: rgba(255, 255, 255, 0.15);
+}
+.nav-links {
+  display: flex;
+  gap: 4px;
+}
+.nav-link-btn {
+  background: transparent;
+  border: none;
+  color: #94A3B8;
+  font-size: 13px;
+  font-weight: 600;
+  padding: 8px 14px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: all 0.15s;
   display: flex;
   align-items: center;
+  gap: 6px;
 }
-.global-search {
-  background: rgba(255,255,255,0.12);
-  border: 1px solid rgba(255,255,255,0.22);
-  border-radius: var(--radius-md);
-  padding: 6px 12px 6px 32px;
+.nav-link-btn:hover {
   color: #FFFFFF;
-  width: 320px;
-  font-size: 12.5px;
-  transition: all 0.2s;
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%23ffffff88' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='11' cy='11' r='8'%3E%3C/circle%3E%3Cline x1='21' y1='21' x2='16.65' y2='16.65'%3E%3C/line%3E%3C/svg%3E");
-  background-repeat: no-repeat;
-  background-position: 10px center;
+  background: rgba(255, 255, 255, 0.08);
 }
-.global-search::placeholder { color: rgba(255,255,255,0.55); }
-.global-search:focus {
-  outline: none;
-  background-color: #FFFFFF;
-  color: var(--text-main);
-  border-color: #FFFFFF;
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%23002F6C' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='11' cy='11' r='8'%3E%3C/circle%3E%3Cline x1='21' y1='21' x2='16.65' y2='16.65'%3E%3C/line%3E%3C/svg%3E");
+.nav-link-btn.active {
+  color: #FFFFFF;
+  background: rgba(255, 255, 255, 0.12);
 }
 
-.header-right {
+.nav-actions {
   display: flex;
   align-items: center;
   gap: 14px;
 }
-.env-chip {
-  background: #127447;
+.search-input-box {
+  position: relative;
+}
+.search-input {
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 99px;
+  padding: 7px 14px 7px 34px;
   color: #FFFFFF;
+  font-size: 12.5px;
+  width: 260px;
+  transition: all 0.2s;
+}
+.search-input:focus {
+  outline: none;
+  background: rgba(255, 255, 255, 0.16);
+  border-color: var(--f5-blue-600);
+  width: 320px;
+}
+.search-input::placeholder { color: #64748B; }
+.search-icon-svg {
+  position: absolute;
+  left: 12px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: #64748B;
+  pointer-events: none;
+}
+
+.env-status-badge {
+  background: rgba(16, 185, 129, 0.15);
+  border: 1px solid rgba(16, 185, 129, 0.3);
+  color: #34D399;
   font-size: 11px;
   font-weight: 700;
-  padding: 3px 8px;
-  border-radius: var(--radius-sm);
+  padding: 4px 10px;
+  border-radius: 99px;
   display: flex;
   align-items: center;
-  gap: 5px;
-  letter-spacing: 0.04em;
+  gap: 6px;
   text-transform: uppercase;
+  letter-spacing: 0.04em;
 }
-.env-chip::before {
-  content: "";
+.pulse-dot {
   width: 6px;
   height: 6px;
-  background: #73E2A7;
+  background: #34D399;
   border-radius: 50%;
-  display: inline-block;
+  box-shadow: 0 0 6px #34D399;
 }
-.user-profile-badge {
+.user-chip {
   display: flex;
   align-items: center;
-  gap: 8px;
-  font-size: 12px;
-  font-weight: 600;
-  background: rgba(255,255,255,0.12);
-  padding: 4px 10px 4px 6px;
-  border-radius: var(--radius-md);
-  border: 1px solid rgba(255,255,255,0.15);
+  gap: 9px;
+  background: rgba(255, 255, 255, 0.08);
+  padding: 4px 12px 4px 5px;
+  border-radius: 99px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
 }
-.user-avatar {
-  width: 24px;
-  height: 24px;
-  background: #0070D2;
+.user-avatar-circle {
+  width: 26px;
+  height: 26px;
   border-radius: 50%;
+  background: linear-gradient(135deg, #0066FF, #0052CC);
+  color: #FFFFFF;
+  font-weight: 700;
+  font-size: 11px;
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 11px;
-  font-weight: 700;
-  color: #FFF;
 }
-.btn-reset-demo {
-  background: transparent;
-  border: 1px solid rgba(255,255,255,0.3);
+.user-details {
+  display: flex;
+  flex-direction: column;
+}
+.user-name {
+  font-size: 12px;
+  font-weight: 700;
   color: #FFFFFF;
-  font-size: 11.5px;
+  line-height: 1.1;
+}
+.user-role {
+  font-size: 10px;
+  color: #94A3B8;
+}
+.btn-demo-reset {
+  background: transparent;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  color: #CBD5E1;
+  font-size: 11px;
   font-weight: 600;
-  padding: 4px 9px;
+  padding: 5px 10px;
   border-radius: var(--radius-sm);
   cursor: pointer;
   transition: all 0.15s;
 }
-.btn-reset-demo:hover {
-  background: rgba(255,255,255,0.15);
-  border-color: #FFF;
+.btn-demo-reset:hover {
+  background: rgba(255, 255, 255, 0.12);
+  color: #FFFFFF;
 }
 
-/* ---------------------------------------------------- SUBNAV / KPI BAR */
-.kpi-bar {
-  background: #FFFFFF;
-  border-bottom: 1px solid var(--slds-border);
-  padding: 12px 28px;
+/* ---------------------------------------------------------------- MAIN CONTAINER */
+.page-container {
+  max-width: 1440px;
+  margin: 24px auto 60px;
+  padding: 0 32px;
+}
+
+/* ---------------------------------------------------------------- KPI HERO SECTION */
+.kpi-grid {
   display: grid;
-  grid-template-columns: repeat(4, 1fr) auto;
-  gap: 20px;
-  align-items: center;
+  grid-template-columns: repeat(4, 1fr) 1.2fr;
+  gap: 16px;
+  margin-bottom: 24px;
 }
-.kpi-card {
+.kpi-stat-card {
+  background: var(--surface-card);
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-md);
+  padding: 16px 20px;
+  box-shadow: var(--shadow-sm);
+  position: relative;
+  overflow: hidden;
+  transition: transform 0.15s, box-shadow 0.15s;
+}
+.kpi-stat-card:hover {
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-card-hover);
+}
+.kpi-stat-card::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 3px;
+  background: transparent;
+}
+.kpi-stat-card.card-blue::before { background: var(--f5-blue-600); }
+.kpi-stat-card.card-green::before { background: var(--status-success); }
+.kpi-stat-card.card-amber::before { background: var(--status-warning); }
+.kpi-stat-card.card-red::before { background: var(--status-danger); }
+.kpi-stat-card.card-navy::before { background: var(--f5-navy-700); }
+
+.kpi-header {
   display: flex;
-  flex-direction: column;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 6px;
 }
-.kpi-label {
-  font-size: 11px;
-  font-weight: 600;
+.kpi-title {
+  font-size: 12px;
+  font-weight: 700;
   color: var(--text-muted);
   text-transform: uppercase;
-  letter-spacing: 0.05em;
+  letter-spacing: 0.04em;
 }
-.kpi-value-row {
+.kpi-icon {
+  width: 28px;
+  height: 28px;
+  border-radius: var(--radius-sm);
   display: flex;
-  align-items: baseline;
-  gap: 6px;
-  margin-top: 2px;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
 }
-.kpi-val {
-  font-size: 20px;
+.icon-blue { background: #EFF6FF; color: var(--f5-blue-600); }
+.icon-green { background: #ECFDF5; color: var(--status-success); }
+.icon-amber { background: #FFFBEB; color: var(--status-warning); }
+.icon-red { background: #FEF2F2; color: var(--status-danger); }
+.icon-navy { background: #F1F5F9; color: var(--f5-navy-700); }
+
+.kpi-stat-value {
+  font-size: 26px;
   font-weight: 800;
-  color: var(--text-main);
-  line-height: 1;
+  color: var(--text-heading);
+  line-height: 1.1;
 }
-.kpi-sub {
-  font-size: 11.5px;
+.kpi-stat-footer {
+  font-size: 12px;
   color: var(--text-muted);
+  margin-top: 4px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
 }
-.kpi-divider {
-  width: 1px;
-  height: 36px;
-  background: var(--slds-border-subtle);
-}
-
-/* ---------------------------------------------------- CONTAINER */
-.app-container {
-  max-width: 1360px;
-  margin: 20px auto 60px;
-  padding: 0 24px;
+.kpi-pill {
+  font-size: 10.5px;
+  font-weight: 700;
+  padding: 1px 6px;
+  border-radius: 99px;
 }
 
-/* ---------------------------------------------------- TAB CONTROLS */
-.filter-toolbar {
+/* ---------------------------------------------------------------- QUEUE SECTION */
+.content-card {
+  background: var(--surface-card);
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-card);
+  overflow: hidden;
+}
+.queue-header-bar {
+  padding: 16px 24px;
+  border-bottom: 1px solid var(--border-light);
   display: flex;
   align-items: center;
   justify-content: space-between;
-  margin-bottom: 14px;
-  border-bottom: 1px solid var(--slds-border);
-  padding-bottom: 12px;
+  flex-wrap: wrap;
+  gap: 16px;
+  background: #FAFCFE;
 }
-.filter-tabs {
-  display: flex;
-  gap: 4px;
-}
-.filter-tab {
-  border: 1px solid transparent;
-  background: transparent;
-  padding: 6px 14px;
+.segmented-filters {
+  display: inline-flex;
+  background: var(--surface-subtle);
+  padding: 3px;
   border-radius: var(--radius-md);
-  font-size: 13px;
+  border: 1px solid var(--border-light);
+}
+.seg-tab-btn {
+  background: transparent;
+  border: none;
+  padding: 6px 14px;
+  font-size: 12.5px;
   font-weight: 600;
   color: var(--text-muted);
+  border-radius: var(--radius-sm);
   cursor: pointer;
+  transition: all 0.15s;
   display: flex;
   align-items: center;
-  gap: 8px;
-  transition: all 0.15s;
+  gap: 6px;
 }
-.filter-tab:hover {
-  background: var(--slds-border-subtle);
-  color: var(--text-main);
+.seg-tab-btn:hover {
+  color: var(--text-heading);
 }
-.filter-tab.active {
-  background: var(--f5-navy);
-  color: #FFFFFF;
+.seg-tab-btn.active {
+  background: var(--surface-card);
+  color: var(--f5-blue-600);
+  box-shadow: var(--shadow-sm);
+  font-weight: 700;
 }
-.tab-count {
+.badge-count {
   font-size: 11px;
   padding: 1px 6px;
   border-radius: 99px;
-  background: rgba(0,0,0,0.08);
+  background: #E2E8F0;
+  color: var(--text-heading);
   font-weight: 700;
 }
-.filter-tab.active .tab-count {
-  background: rgba(255,255,255,0.25);
-  color: #FFFFFF;
+.seg-tab-btn.active .badge-count {
+  background: var(--f5-blue-50);
+  color: var(--f5-blue-600);
 }
 
-/* ---------------------------------------------------- DATA TABLE */
-.slds-table-card {
-  background: var(--slds-card);
-  border: 1px solid var(--slds-border);
-  border-radius: var(--radius-lg);
-  box-shadow: var(--shadow-sm);
-  overflow: hidden;
+.table-toolbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
 }
-.enterprise-table {
+
+/* Modern Datatable */
+.modern-table {
   width: 100%;
-  border-collapse: collapse;
+  border-collapse: separate;
+  border-spacing: 0;
   text-align: left;
-  font-size: 13px;
 }
-.enterprise-table th {
-  background: #F8FAFD;
+.modern-table th {
+  background: #F8FAFC;
   color: var(--text-muted);
-  font-size: 11.5px;
+  font-size: 11px;
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.05em;
-  padding: 10px 16px;
-  border-bottom: 1px solid var(--slds-border);
+  padding: 12px 20px;
+  border-bottom: 1px solid var(--border-light);
 }
-.enterprise-table td {
-  padding: 12px 16px;
-  border-bottom: 1px solid var(--slds-border-subtle);
+.modern-table td {
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--border-light);
   vertical-align: middle;
-}
-.enterprise-table tr:last-child td { border-bottom: none; }
-.enterprise-table tr.clickable-row {
-  cursor: pointer;
   transition: background-color 0.12s;
 }
-.enterprise-table tr.clickable-row:hover {
-  background-color: var(--slds-card-hover);
+.modern-table tbody tr:hover td {
+  background: #F8FAFD;
+}
+.modern-table tbody tr:last-child td {
+  border-bottom: none;
 }
 
-.po-badge-cell strong {
+.po-number-cell {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.pdf-icon-badge {
+  width: 34px;
+  height: 34px;
+  background: #FEE2E2;
+  color: #DC2626;
+  border-radius: var(--radius-sm);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 800;
+  font-size: 10px;
+  flex: none;
+}
+.po-text-info strong {
   font-size: 14px;
-  color: var(--f5-blue);
   font-weight: 700;
+  color: var(--text-heading);
   display: block;
 }
-.po-badge-cell span {
-  font-size: 11px;
+.po-text-info span {
+  font-size: 11.5px;
   color: var(--text-muted);
+}
+
+.reseller-info-cell strong {
+  font-size: 13.5px;
+  font-weight: 700;
+  color: var(--text-heading);
 }
 .channel-pill {
   font-size: 11px;
   font-weight: 600;
-  padding: 2px 7px;
-  border-radius: var(--radius-sm);
-  background: #EEF2F6;
+  padding: 2px 8px;
+  border-radius: var(--radius-xs);
+  background: var(--surface-subtle);
   color: var(--text-muted);
+  border: 1px solid var(--border-light);
   display: inline-block;
   margin-top: 2px;
 }
-.amount-cell {
-  font-family: "JetBrains Mono", ui-monospace, monospace;
-  font-size: 13px;
+.quote-mono-cell code {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 12px;
+  font-weight: 600;
+  background: #F1F5F9;
+  padding: 2px 6px;
+  border-radius: var(--radius-xs);
+  color: var(--f5-navy-800);
+}
+.amount-mono-cell {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 14px;
   font-weight: 700;
-  color: var(--text-main);
+  color: var(--text-heading);
   text-align: right;
 }
 
-/* Status Badges */
-.slds-badge {
+/* Status Chips */
+.status-pill {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
-  padding: 3px 9px;
+  gap: 6px;
+  padding: 4px 10px;
   border-radius: 99px;
   font-size: 11.5px;
   font-weight: 700;
   letter-spacing: 0.02em;
 }
-.badge-ok {
-  background: var(--status-ok-bg);
-  color: var(--status-ok);
-  border: 1px solid var(--status-ok-border);
+.status-pill.status-ready {
+  background: var(--status-success-bg);
+  color: var(--status-success);
+  border: 1px solid var(--status-success-border);
 }
-.badge-warn {
-  background: var(--status-warn-bg);
-  color: var(--status-warn);
-  border: 1px solid var(--status-warn-border);
+.status-pill.status-review {
+  background: var(--status-warning-bg);
+  color: var(--status-warning);
+  border: 1px solid var(--status-warning-border);
 }
-.badge-bad {
-  background: var(--status-bad-bg);
-  color: var(--status-bad);
-  border: 1px solid var(--status-bad-border);
+.status-pill.status-return {
+  background: var(--status-danger-bg);
+  color: var(--status-danger);
+  border: 1px solid var(--status-danger-border);
 }
-.badge-muted {
-  background: #F2F4F7;
+.status-pill.status-booked {
+  background: #F1F5F9;
   color: var(--text-muted);
-  border: 1px solid #D0D5DD;
+  border: 1px solid #CBD5E1;
 }
 
-.btn-table-action {
-  background: #FFFFFF;
-  border: 1px solid var(--slds-border);
-  color: var(--f5-navy);
-  font-weight: 600;
-  font-size: 12px;
-  padding: 5px 12px;
+/* Action Buttons */
+.btn-action-primary {
+  background: var(--f5-blue-600);
+  color: #FFFFFF;
+  border: none;
+  font-size: 12.5px;
+  font-weight: 700;
+  padding: 7px 14px;
   border-radius: var(--radius-md);
   cursor: pointer;
   transition: all 0.15s;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  box-shadow: 0 2px 4px rgba(0, 102, 255, 0.2);
 }
-.btn-table-action:hover {
-  background: var(--f5-blue-light);
-  border-color: var(--f5-blue);
-  color: var(--f5-blue);
+.btn-action-primary:hover {
+  background: var(--f5-blue-700);
+  box-shadow: 0 4px 8px rgba(0, 102, 255, 0.3);
+}
+.btn-action-outline {
+  background: #FFFFFF;
+  color: var(--text-heading);
+  border: 1px solid var(--border-strong);
+  font-size: 12.5px;
+  font-weight: 600;
+  padding: 7px 14px;
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  transition: all 0.15s;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.btn-action-outline:hover {
+  background: var(--surface-subtle);
+  border-color: var(--text-muted);
 }
 
-/* ---------------------------------------------------- DETAIL VIEW: LIGHTNING RECORD PAGE */
-.record-header-card {
-  background: #FFFFFF;
-  border: 1px solid var(--slds-border);
+/* ---------------------------------------------------------------- DETAIL WORKSPACE */
+.detail-hero-card {
+  background: var(--surface-card);
+  border: 1px solid var(--border-light);
   border-radius: var(--radius-lg);
-  box-shadow: var(--shadow-sm);
-  padding: 18px 24px;
-  margin-bottom: 20px;
+  box-shadow: var(--shadow-card);
+  padding: 24px;
+  margin-bottom: 24px;
 }
-.record-top-row {
+.detail-top-nav {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 16px;
+}
+.breadcrumb-trail {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--text-muted);
+}
+.breadcrumb-btn {
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--f5-blue-600);
+  font-weight: 600;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.breadcrumb-btn:hover { text-decoration: underline; }
+
+.detail-main-header {
   display: flex;
   justify-content: space-between;
   align-items: flex-start;
-  margin-bottom: 14px;
+  flex-wrap: wrap;
+  gap: 16px;
+  margin-bottom: 20px;
 }
-.record-title-area {
+.po-hero-title-group h1 {
+  margin: 0;
+  font-size: 24px;
+  font-weight: 800;
+  color: var(--text-heading);
+  letter-spacing: -0.02em;
   display: flex;
   align-items: center;
   gap: 12px;
 }
-.record-icon {
-  width: 40px;
-  height: 40px;
-  background: var(--f5-navy);
-  color: #FFFFFF;
+.po-hero-sub {
+  margin: 4px 0 0;
+  font-size: 13px;
+  color: var(--text-muted);
+}
+
+/* Pipeline Chevron Stepper */
+.workflow-stepper {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 8px;
+  margin-bottom: 24px;
+  background: var(--surface-subtle);
+  padding: 6px;
   border-radius: var(--radius-md);
+  border: 1px solid var(--border-light);
+}
+.step-item {
+  background: transparent;
+  padding: 8px 12px;
+  border-radius: var(--radius-sm);
+  text-align: center;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text-muted);
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 20px;
+  gap: 6px;
+}
+.step-item.step-done {
+  background: #FFFFFF;
+  color: var(--status-success);
   box-shadow: var(--shadow-sm);
 }
-.record-title {
-  margin: 0;
-  font-size: 20px;
-  font-weight: 800;
-  color: var(--f5-navy);
-}
-.record-subtitle {
-  margin: 2px 0 0;
-  font-size: 12.5px;
-  color: var(--text-muted);
-}
-.record-actions {
-  display: flex;
-  gap: 10px;
-  align-items: center;
-}
-
-/* Buttons */
-.btn-primary {
-  background: var(--f5-blue);
+.step-item.step-active {
+  background: var(--f5-navy-900);
   color: #FFFFFF;
-  border: 1px solid var(--f5-blue);
-  padding: 8px 16px;
-  font-size: 13px;
-  font-weight: 700;
-  border-radius: var(--radius-md);
-  cursor: pointer;
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  box-shadow: var(--shadow-sm);
-  transition: all 0.15s;
-}
-.btn-primary:hover {
-  background: var(--f5-blue-hover);
-  border-color: var(--f5-blue-hover);
-}
-.btn-primary[disabled] {
-  opacity: 0.45;
-  cursor: not-allowed;
-  box-shadow: none;
-}
-.btn-secondary {
-  background: #FFFFFF;
-  color: var(--text-main);
-  border: 1px solid var(--slds-border);
-  padding: 8px 14px;
-  font-size: 13px;
-  font-weight: 600;
-  border-radius: var(--radius-md);
-  cursor: pointer;
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  transition: all 0.15s;
-}
-.btn-secondary:hover {
-  background: #F8FAFD;
-  border-color: #B0B9C6;
-}
-.btn-danger-outline {
-  background: #FFFFFF;
-  color: var(--f5-red);
-  border: 1px solid var(--status-bad-border);
-  padding: 8px 14px;
-  font-size: 13px;
-  font-weight: 600;
-  border-radius: var(--radius-md);
-  cursor: pointer;
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  transition: all 0.15s;
-}
-.btn-danger-outline:hover {
-  background: var(--status-bad-bg);
-  border-color: var(--f5-red);
+  box-shadow: 0 2px 6px rgba(10, 22, 40, 0.2);
 }
 
-/* Chevron Pipeline Path */
-.path-container {
-  display: flex;
-  margin: 14px 0 16px;
-  background: #F4F6F9;
-  border-radius: var(--radius-md);
-  padding: 3px;
-  border: 1px solid var(--slds-border-subtle);
-  overflow-x: auto;
-}
-.path-step {
-  flex: 1;
-  text-align: center;
-  padding: 6px 12px;
-  font-size: 11.5px;
-  font-weight: 700;
-  color: var(--text-muted);
-  background: transparent;
-  position: relative;
-  border-radius: var(--radius-sm);
-  white-space: nowrap;
-}
-.path-step.completed {
-  color: var(--status-ok);
-  background: #FFFFFF;
-  box-shadow: 0 1px 2px rgba(0,0,0,0.05);
-}
-.path-step.current {
-  background: var(--f5-navy);
-  color: #FFFFFF;
-  box-shadow: 0 1px 3px rgba(0,0,0,0.1);
-}
-.path-step.upcoming {
-  color: var(--text-subtle);
-}
-
-/* Compact Key Fields Grid */
-.compact-fields-grid {
+/* Quick Attribute Strip */
+.quick-attributes-grid {
   display: grid;
   grid-template-columns: repeat(5, 1fr);
-  gap: 16px;
-  padding-top: 12px;
-  border-top: 1px solid var(--slds-border-subtle);
+  gap: 20px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border-light);
 }
-.cf-item label {
-  display: block;
+.qa-box {
+  display: flex;
+  flex-direction: column;
+}
+.qa-box label {
   font-size: 11px;
-  font-weight: 600;
+  font-weight: 700;
   color: var(--text-muted);
   text-transform: uppercase;
   letter-spacing: 0.04em;
 }
-.cf-item .cf-val {
-  font-size: 13.5px;
+.qa-box .qa-val {
+  font-size: 14px;
   font-weight: 700;
-  color: var(--text-main);
+  color: var(--text-heading);
   margin-top: 2px;
 }
 
-/* Attention Banner */
-.attention-banner {
-  margin-bottom: 20px;
-  padding: 12px 18px;
+/* Alert Callouts */
+.alert-callout-box {
+  padding: 14px 18px;
   border-radius: var(--radius-md);
+  margin-bottom: 24px;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  border: 1px solid transparent;
+  gap: 14px;
 }
-.attention-banner.ready {
-  background: var(--status-ok-bg);
-  border-color: var(--status-ok-border);
-  color: var(--status-ok);
+.alert-callout-box.alert-ready {
+  background: #F0FDF4;
+  border: 1px solid #BBF7D0;
+  color: #166534;
 }
-.attention-banner.review {
-  background: var(--status-warn-bg);
-  border-color: var(--status-warn-border);
-  color: var(--status-warn);
+.alert-callout-box.alert-review {
+  background: #FFFBEB;
+  border: 1px solid #FDE68A;
+  color: #92400E;
 }
-.attention-banner.return {
-  background: var(--status-bad-bg);
-  border-color: var(--status-bad-border);
-  color: var(--status-bad);
+.alert-callout-box.alert-return {
+  background: #FEF2F2;
+  border: 1px solid #FECACA;
+  color: #991B1B;
 }
 
-/* Record Tabs Navigation */
-.record-nav-tabs {
+/* ---------------------------------------------------------------- WORKSPACE SPLIT (70/30) */
+.workspace-grid {
+  display: grid;
+  grid-template-columns: 1.8fr 1.2fr;
+  gap: 24px;
+}
+@media (max-width: 1200px) {
+  .workspace-grid { grid-template-columns: 1fr; }
+  .kpi-grid { grid-template-columns: repeat(2, 1fr); }
+  .workflow-stepper { grid-template-columns: 1fr; }
+}
+
+/* Tab Header for Main Stage */
+.stage-tab-nav {
   display: flex;
-  gap: 2px;
-  border-bottom: 1px solid var(--slds-border);
+  gap: 4px;
+  border-bottom: 2px solid var(--border-light);
   margin-bottom: 20px;
 }
-.record-tab {
+.stage-tab-btn {
   background: transparent;
   border: none;
-  border-bottom: 3px solid transparent;
+  border-bottom: 2px solid transparent;
   padding: 10px 18px;
   font-size: 13.5px;
   font-weight: 600;
   color: var(--text-muted);
   cursor: pointer;
+  margin-bottom: -2px;
   transition: all 0.15s;
 }
-.record-tab:hover {
-  color: var(--f5-navy);
-}
-.record-tab.active {
-  color: var(--f5-blue);
-  border-bottom-color: var(--f5-blue);
+.stage-tab-btn:hover { color: var(--f5-navy-900); }
+.stage-tab-btn.active {
+  color: var(--f5-blue-600);
+  border-bottom-color: var(--f5-blue-600);
   font-weight: 700;
 }
 
-/* ---------------------------------------------------- SPLIT PANELS */
-.split-content {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 20px;
-}
-@media (max-width: 1080px) {
-  .split-content { grid-template-columns: 1fr; }
-  .compact-fields-grid { grid-template-columns: repeat(2, 1fr); }
-  .kpi-bar { grid-template-columns: repeat(2, 1fr); }
-}
-
-.panel-card {
-  background: #FFFFFF;
-  border: 1px solid var(--slds-border);
-  border-radius: var(--radius-lg);
-  box-shadow: var(--shadow-sm);
-  margin-bottom: 20px;
-  overflow: hidden;
-}
-.panel-header {
-  padding: 14px 20px;
-  background: #F8FAFD;
-  border-bottom: 1px solid var(--slds-border);
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-}
-.panel-title {
-  margin: 0;
-  font-size: 14px;
-  font-weight: 700;
-  color: var(--f5-navy);
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-.panel-body {
-  padding: 16px 20px;
-}
-
-/* Side-by-Side Comparison Table */
-.reconciliation-table {
+/* Side-by-Side Visual Diff Table */
+.diff-table {
   width: 100%;
   border-collapse: collapse;
-  font-size: 13px;
 }
-.reconciliation-table th {
-  background: #F1F4F9;
+.diff-table th {
+  background: #F8FAFC;
   color: var(--text-muted);
   font-size: 11px;
   font-weight: 700;
   text-transform: uppercase;
-  padding: 8px 12px;
-  border-bottom: 1px solid var(--slds-border);
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--border-light);
 }
-.reconciliation-table td {
-  padding: 10px 12px;
-  border-bottom: 1px solid var(--slds-border-subtle);
+.diff-table td {
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border-light);
   vertical-align: top;
 }
-.col-match-status {
-  width: 32px;
-  text-align: center;
-  font-weight: bold;
+.diff-table tr.has-variance td {
+  background: #FFF7ED;
 }
-.reconciliation-table tr.row-diff td {
-  background: #FFF7F5;
-}
-.diff-highlight {
-  color: var(--f5-red);
+.variance-tag {
+  color: #C2410C;
+  font-size: 11px;
   font-weight: 700;
-  font-size: 11.5px;
   display: block;
   margin-top: 2px;
 }
 
-/* Checklist Items */
-.checklist-list {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-}
-.checklist-row {
+/* Checklist Cards */
+.check-item-row {
   display: flex;
   align-items: flex-start;
   gap: 12px;
-  padding: 10px 0;
-  border-bottom: 1px solid var(--slds-border-subtle);
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border-light);
+  transition: background-color 0.12s;
 }
-.checklist-row:last-child { border-bottom: none; }
-.ck-icon {
-  width: 20px;
-  height: 20px;
+.check-item-row:hover { background: #F8FAFC; }
+.check-item-row:last-child { border-bottom: none; }
+.check-badge-icon {
+  width: 22px;
+  height: 22px;
   border-radius: 50%;
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 800;
   flex: none;
-  margin-top: 2px;
 }
-.ck-pass { background: #ECFDF3; color: #027A48; }
-.ck-flag { background: #FFFAEB; color: #B54708; }
-.ck-bad { background: #FEF3F2; color: #B42318; }
-.ck-info { background: #F0F9FF; color: #026AA2; }
-.ck-text strong {
-  font-size: 13px;
-  color: var(--text-main);
+.check-pass { background: #DCFCE7; color: #15803D; }
+.check-warn { background: #FEF3C7; color: #B45309; }
+.check-fail { background: #FEE2E2; color: #B91C1C; }
+.check-info { background: #E0F2FE; color: #0369A1; }
+
+/* Booking Form Form Elements */
+.form-input-group {
+  margin-bottom: 16px;
+}
+.form-input-group label {
   display: block;
-}
-.ck-text span {
   font-size: 12px;
-  color: var(--text-muted);
+  font-weight: 700;
+  color: var(--text-heading);
+  margin-bottom: 6px;
 }
-
-/* Flagged Items Attention Card */
-.attention-card {
-  border-left: 4px solid var(--f5-red);
-}
-.flag-item-box {
-  background: #FFF9F9;
-  border: 1px solid #FCD4D4;
+.modern-input {
+  width: 100%;
+  border: 1px solid var(--border-strong);
   border-radius: var(--radius-md);
-  padding: 12px 14px;
-  margin-bottom: 10px;
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-}
-.flag-item-box.resolved {
-  background: #F4FBF7;
-  border-color: #C2EAD3;
-}
-
-/* Form Controls (Draft Booking Form) */
-.form-grid {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 14px 20px;
-}
-.form-group {
-  display: flex;
-  flex-direction: column;
-}
-.form-group.full-width {
-  grid-column: 1 / -1;
-}
-.form-group label {
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--text-muted);
-  margin-bottom: 4px;
-}
-.form-control {
-  border: 1px solid var(--slds-border);
-  border-radius: var(--radius-md);
-  padding: 8px 12px;
-  font-size: 13px;
-  color: var(--text-main);
+  padding: 9px 12px;
+  font-size: 13.5px;
+  color: var(--text-heading);
   background: #FFFFFF;
-  transition: all 0.15s;
+  transition: border-color 0.15s, box-shadow 0.15s;
 }
-.form-control:focus {
+.modern-input:focus {
   outline: none;
-  border-color: var(--f5-blue);
-  box-shadow: 0 0 0 3px rgba(0,112,210,0.15);
+  border-color: var(--f5-blue-600);
+  box-shadow: 0 0 0 3px rgba(0, 102, 255, 0.15);
 }
-textarea.form-control {
-  min-height: 80px;
+.modern-input[readonly] {
+  background: var(--surface-subtle);
+  color: var(--text-muted);
+}
+textarea.modern-input {
+  min-height: 90px;
   font-family: inherit;
   resize: vertical;
 }
 
-/* JSON Payload Box */
-.json-box {
+/* JSON Code Box */
+.code-inspector-box {
   background: #0F172A;
   color: #38BDF8;
-  font-family: "JetBrains Mono", monospace;
+  font-family: 'JetBrains Mono', monospace;
   font-size: 12px;
-  padding: 14px;
+  padding: 16px;
   border-radius: var(--radius-md);
   overflow-x: auto;
   line-height: 1.5;
-  margin-top: 14px;
 }
 
-/* ---------------------------------------------------- MODALS */
-.modal-overlay {
+/* Modals */
+.modal-backdrop-blur {
   position: fixed;
   inset: 0;
-  background: rgba(0, 30, 71, 0.45);
-  backdrop-filter: blur(2px);
+  background: rgba(10, 22, 40, 0.55);
+  backdrop-filter: blur(4px);
   z-index: 1000;
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 20px;
+  padding: 24px;
 }
-.slds-modal-box {
+.modern-modal-card {
   background: #FFFFFF;
-  border-radius: var(--radius-lg);
+  border-radius: var(--radius-xl);
   box-shadow: var(--shadow-modal);
   width: 100%;
-  max-width: 600px;
-  border: 1px solid var(--slds-border);
+  max-width: 620px;
+  border: 1px solid var(--border-light);
   overflow: hidden;
-  animation: modalEnter 0.18s ease-out;
+  animation: modalSlideUp 0.18s cubic-bezier(0.16, 1, 0.3, 1);
 }
-@keyframes modalEnter {
-  from { opacity: 0; transform: scale(0.97) translateY(-8px); }
-  to { opacity: 1; transform: scale(1) translateY(0); }
+@keyframes modalSlideUp {
+  from { opacity: 0; transform: translateY(12px) scale(0.98); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
 }
-.modal-top-bar {
-  background: var(--f5-navy);
+.modal-header-bar {
+  background: var(--f5-navy-900);
   color: #FFFFFF;
-  padding: 14px 20px;
+  padding: 18px 24px;
   display: flex;
   justify-content: space-between;
   align-items: center;
 }
-.modal-top-bar h3 {
+.modal-header-bar h3 {
   margin: 0;
-  font-size: 15px;
-  font-weight: 700;
+  font-size: 16px;
+  font-weight: 800;
 }
-.modal-close-btn {
-  background: none;
+.btn-close-modal {
+  background: transparent;
   border: none;
-  color: rgba(255,255,255,0.7);
-  font-size: 18px;
+  color: #94A3B8;
+  font-size: 20px;
   cursor: pointer;
+  line-height: 1;
 }
-.modal-close-btn:hover { color: #FFF; }
-.modal-content-area {
-  padding: 20px 24px;
+.btn-close-modal:hover { color: #FFFFFF; }
+.modal-body-pad {
+  padding: 24px;
 }
-.modal-bottom-actions {
-  background: #F8FAFD;
-  padding: 12px 24px;
-  border-top: 1px solid var(--slds-border);
+.modal-footer-bar {
+  background: var(--surface-subtle);
+  padding: 14px 24px;
+  border-top: 1px solid var(--border-light);
   display: flex;
   justify-content: flex-end;
-  gap: 10px;
+  gap: 12px;
 }
 
 /* Toast */
-.enterprise-toast {
+.floating-toast-alert {
   position: fixed;
-  bottom: 24px;
-  right: 24px;
-  background: var(--f5-navy-dark);
+  bottom: 28px;
+  right: 28px;
+  background: var(--f5-navy-900);
   color: #FFFFFF;
-  border-left: 4px solid var(--status-ok);
-  padding: 12px 20px;
+  border-left: 4px solid var(--status-success);
+  padding: 14px 22px;
   border-radius: var(--radius-md);
   font-size: 13.5px;
-  font-weight: 600;
-  box-shadow: 0 8px 24px rgba(0,0,0,0.2);
+  font-weight: 700;
+  box-shadow: var(--shadow-modal);
   z-index: 2000;
   opacity: 0;
-  transform: translateY(12px);
-  transition: all 0.2s;
+  transform: translateY(16px);
+  transition: all 0.22s ease-out;
   pointer-events: none;
 }
-.enterprise-toast.show {
+.floating-toast-alert.visible {
   opacity: 1;
   transform: translateY(0);
 }
@@ -924,109 +965,77 @@ textarea.form-control {
 </head>
 <body>
 
-<!-- 1. GLOBAL ENTERPRISE HEADER -->
-<header class="global-header">
-  <div class="header-left">
-    <div class="f5-logo-badge">
-      <span class="f5-ball">f5</span> Sales Operations
+<!-- TOP ENTERPRISE NAVBAR -->
+<nav class="top-navbar">
+  <div class="brand-area">
+    <div class="f5-logo-container" id="navHomeBtn">
+      <div class="f5-symbol">f5</div>
+      <div class="brand-title-wrap">
+        <span class="brand-title">F5 Sales Operations Workspace</span>
+        <span class="brand-subtitle">Automated PO Validation & Salesforce Booking</span>
+      </div>
     </div>
-    <div class="app-divider"></div>
-    <div class="app-title-block">
-      <span class="app-title">Automated PO Validation & Salesforce Booking</span>
-      <span class="app-subtitle">CPQ Quote Reconciliation Engine</span>
+    <div class="nav-divider"></div>
+    <div class="nav-links">
+      <button type="button" class="nav-link-btn active" id="navQueueBtn">📥 Inbound Queue</button>
+      <button type="button" class="nav-link-btn" onclick="alert('Viewing 38 standard SOS validation rules configured in engine.')">🛡️ Policy Rules (38)</button>
+      <button type="button" class="nav-link-btn" onclick="alert('Connected to Snowflake PRD_ENT_RAW.SALESFORCE tables (Replica sync latency: 12s).')">⚡ Snowflake Sync</button>
     </div>
   </div>
 
-  <div class="header-center">
-    <input type="text" class="global-search" placeholder="Search PO #, Reseller, Quote, or Opp ID...">
-  </div>
-
-  <div class="header-right">
-    <span class="env-chip">poclab sandbox</span>
-    <div class="user-profile-badge">
-      <div class="user-avatar">AH</div>
-      <span>Amy Higgins (SOS)</span>
+  <div class="nav-actions">
+    <div class="search-input-box">
+      <svg class="search-icon-svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
+      <input type="text" class="search-input" id="globalSearchInput" placeholder="Filter PO #, Reseller, Quote...">
     </div>
-    <button type="button" class="btn-reset-demo" id="resetBtn" title="Reset sample test orders">Reset Demo</button>
-  </div>
-</header>
-
-<!-- 2. ENTERPRISE KPI METRICS BAR -->
-<section class="kpi-bar">
-  <div class="kpi-card">
-    <span class="kpi-label">Inbound Queue Today</span>
-    <div class="kpi-value-row">
-      <span class="kpi-val" id="kpiTotalOrders">5</span>
-      <span class="kpi-sub">Total POs parsed</span>
+    <span class="env-status-badge"><span class="pulse-dot"></span> poclab sandbox</span>
+    <div class="user-chip">
+      <div class="user-avatar-circle">AH</div>
+      <div class="user-details">
+        <span class="user-name">Amy Higgins</span>
+        <span class="user-role">SOS Lead Specialist</span>
+      </div>
     </div>
+    <button type="button" class="btn-demo-reset" id="resetDemoBtn" title="Reset sample PO queue">Reset Demo</button>
   </div>
-  <div class="kpi-card">
-    <span class="kpi-label">Clean 100% Matches</span>
-    <div class="kpi-value-row">
-      <span class="kpi-val" style="color:var(--status-ok)" id="kpiCleanOrders">1</span>
-      <span class="kpi-sub">Auto-booking ready</span>
-    </div>
-  </div>
-  <div class="kpi-card">
-    <span class="kpi-label">Exceptions for Review</span>
-    <div class="kpi-value-row">
-      <span class="kpi-val" style="color:var(--status-warn)" id="kpiReviewOrders">3</span>
-      <span class="kpi-sub">Requires SOS decision</span>
-    </div>
-  </div>
-  <div class="kpi-card">
-    <span class="kpi-label">Quote Mismatches / Action</span>
-    <div class="kpi-value-row">
-      <span class="kpi-val" style="color:var(--status-bad)" id="kpiReturnOrders">1</span>
-      <span class="kpi-sub">Return to reseller</span>
-    </div>
-  </div>
-  <div class="kpi-card" style="text-align:right;">
-    <span class="kpi-label">Avg Validation Speed</span>
-    <div class="kpi-value-row">
-      <span class="kpi-val" style="color:var(--f5-blue);">1.8s</span>
-      <span class="kpi-sub">Snowflake sync</span>
-    </div>
-  </div>
-</section>
+</nav>
 
 <!-- MAIN APP ROOT -->
-<main class="app-container" id="appRoot"></main>
+<main class="page-container" id="appRoot"></main>
 
-<!-- MODAL & TOAST ROOT -->
-<div id="modalContainer"></div>
-<div class="enterprise-toast" id="toastBox"></div>
+<!-- MODAL & NOTIFICATION CONTAINER -->
+<div id="modalHost"></div>
+<div class="floating-toast-alert" id="toastAlert"></div>
 
 <script>
 (function() {
   "use strict";
 
-  /* Sample dataset representing the 5 real F5 test POs */
-  var SEED_DATA = [
+  /* Seed Data reflecting the 5 real F5 sample POs */
+  var SAMPLE_ORDERS = [
     {
-      id: "ingram", po: "4501234567", from: "Ingram Micro", channel: "Distributor",
+      id: "ingram", po: "4501234567", from: "Ingram Micro Inc", channel: "Distributor",
       file: "Ingram_PO_4501234567.pdf", received: "08:12 AM", poDate: "Oct 5, 2026",
       quote: "F5Q-00972766", opportunity: "006do00000K8sFsAAJ", status: "ready",
-      summary: "100% match against CPQ Quote F5Q-00972766. All 11 checklist rules passed.",
+      summary: "100% Match with CPQ Quote F5Q-00972766. Zero variances, all 11 checklist rules passed cleanly.",
       checklist: [
-        ["pass", "F5 Corp Entity Match", "Issued to F5, Inc. (CORP)"],
-        ["pass", "Valid PO Number", "PO# 4501234567"],
-        ["pass", "Standard Payment Terms", "NET 30"],
-        ["pass", "Single Bill-To Entity", "Ingram Micro Inc."],
-        ["pass", "Physical Ship-To Address", "1 Contoso Way, Seattle WA with contact phone"],
-        ["pass", "End User Declared", "Contoso Corporation (Matches quote)"],
-        ["na", "Direct Reseller", "Distributor transaction; Ingram Micro is Bill-To"],
-        ["pass", "Accepted IncoTerms", "FCA Ship Point"],
-        ["pass", "F5 SKUs Verified", "2 lines verified against Pricebook"],
-        ["pass", "Mathematical Reconciliation", "Extracted totals reconcile ($24,242.10)"],
-        ["pass", "Carrier Details", "FedEx Ground on PO"]
+        ["pass", "F5 Corporate Entity Verification", "Issued to F5, Inc. (CORP Seattle WA)"],
+        ["pass", "Purchase Order Identifier", "Valid unique PO# 4501234567"],
+        ["pass", "Commercial Credit Terms", "NET 30 matches account master"],
+        ["pass", "Single Bill-To Entity", "Ingram Micro Inc. (Tax ID verified)"],
+        ["pass", "Physical Ship-To Verification", "1 Contoso Way, Seattle WA with site contact"],
+        ["pass", "End User Customer Details", "Contoso Corporation (Matches quote end-user)"],
+        ["pass", "Accepted IncoTerms", "FCA Ship Point (Accepted standard)"],
+        ["pass", "Catalog SKU Validation", "2 hardware/license lines verified in pricebook"],
+        ["pass", "Mathematical Integrity Check", "Lines sum to $24,242.10 perfectly"],
+        ["pass", "Freight & Carrier Instructions", "Carrier: FedEx Ground (Account on PO)"]
       ],
       flags: [],
       compare: [
-        ["CPQ Quote Number", "F5Q-00972766", "F5Q-00972766", "yes"],
-        ["Salesforce Opportunity", "006do00000K8sFsAAJ", "006do00000K8sFsAAJ", "yes"],
-        ["Currency", "USD", "USD", "yes"],
-        ["Order Net Total", 24242.10, 24242.10, "yes"]
+        ["CPQ Quote Reference", "F5Q-00972766", "F5Q-00972766", "yes"],
+        ["Opportunity Target", "006do00000K8sFsAAJ", "006do00000K8sFsAAJ", "yes"],
+        ["Currency ISO", "USD", "USD", "yes"],
+        ["Net Bookable Total", 24242.10, 24242.10, "yes"]
       ],
       lines: [
         { poSku: "F5-BIG-VE-BTA-25MV18", desc: "BIG-IP VE Best Bundle 25 Mbps", qty: 2, total: 20165.04, sfSku: "F5-BIG-VE-BTA-25MV18", sfTotal: 20165.04, match: "yes" },
@@ -1037,37 +1046,36 @@ textarea.form-control {
         distributor: "Ingram Micro", reseller: "Ingram Micro", issues: false
       },
       notes: [
-        { title: "Note to RO: End User info", body: "Contoso Corporation\n1 Contoso Way, Seattle, WA 98101\nContact details verified from PO" },
-        { title: "Note to RO: Carrier information", body: "Carrier: FedEx Ground\nFreight term: Collect (Carrier account stated on PO)" }
+        { title: "Note to RO: End User Details", body: "Contoso Corporation\n1 Contoso Way, Seattle, WA 98101\nContact info extracted from PO" },
+        { title: "Note to RO: Shipping Account", body: "Carrier: FedEx Ground\nFreight term: Collect (Carrier account stated on PO)" }
       ]
     },
     {
-      id: "wwt", po: "4527709", from: "World Wide Technology", channel: "Reseller",
+      id: "wwt", po: "4527709", from: "World Wide Technology", channel: "Reseller Partner",
       file: "wwt_po_4527709.pdf", received: "08:47 AM", poDate: "Nov 4, 2025",
       quote: "F5Q-01083998", opportunity: "006Po00000f1Gr7IAE", status: "review",
-      summary: "IncoTerms 'FOB' flagged. All line items, SKUs, and amount match 100%.",
+      summary: "IncoTerms 'FOB' flagged. All hardware line items, SKUs, and pricing reconcile 100%.",
       checklist: [
-        ["pass", "F5 Corp Entity Match", "Issued to F5 Networks Inc."],
-        ["pass", "Valid PO Number", "PO# 4527709"],
-        ["pass", "Payment Terms", "NET 60"],
+        ["pass", "F5 Corporate Entity Verification", "Issued to F5 Networks Inc."],
+        ["pass", "Purchase Order Identifier", "Valid unique PO# 4527709"],
+        ["pass", "Commercial Credit Terms", "NET 60"],
         ["pass", "Single Bill-To Entity", "World Wide Technology LLC"],
-        ["flag", "Ship-To Contact Email", "Missing email address on shipping block"],
-        ["pass", "End User Declared", "GMF NA US Management Company (Verified)"],
-        ["na", "Direct Distributor", "WWT is direct Reseller"],
-        ["flag", "IncoTerms Verification", "'FOB' requires SOS sign-off (Standard: FCA)"],
-        ["pass", "F5 SKUs Verified", "F5-UPG-SFP28-SR"],
-        ["pass", "Mathematical Reconciliation", "$3,749.92 matches Quote exactly"],
+        ["warn", "Ship-To Contact Email", "Physical address & phone present; email missing"],
+        ["pass", "End User Customer Details", "GMF NA US Management Company (Verified)"],
+        ["warn", "IncoTerms Compliance", "'FOB' specified; standard is FCA Origin. SOS sign-off needed."],
+        ["pass", "Catalog SKU Validation", "F5-UPG-SFP28-SR"],
+        ["pass", "Mathematical Integrity Check", "Total $3,749.92 reconciles exactly"],
         ["pass", "Carrier Details", "Standard WWT logistics"]
       ],
       flags: [
-        { id: "w1", title: "IncoTerms 'FOB' requires SOS acknowledgement", detail: "F5 standard is FCA Origin / Ship Point. Non-destination FOB is acceptable upon SOS review." },
-        { id: "w2", title: "Ship-To contact missing email", detail: "Physical address and phone verified; email field blank on PO." }
+        { id: "w1", title: "IncoTerms 'FOB' requires SOS acknowledgement", detail: "F5 standard policy is FCA Origin. Non-destination FOB is acceptable with SOS notation." },
+        { id: "w2", title: "Ship-To contact email omitted", detail: "Physical address and phone are valid; email was omitted on vendor PO." }
       ],
       compare: [
-        ["CPQ Quote Number", "F5Q-01083998", "F5Q-01083998", "yes"],
-        ["Salesforce Opportunity", "006Po00000f1Gr7IAE", "006Po00000f1Gr7IAE", "yes"],
-        ["Currency", "USD", "USD", "yes"],
-        ["Order Net Total", 3749.92, 3749.92, "yes"]
+        ["CPQ Quote Reference", "F5Q-01083998", "F5Q-01083998", "yes"],
+        ["Opportunity Target", "006Po00000f1Gr7IAE", "006Po00000f1Gr7IAE", "yes"],
+        ["Currency ISO", "USD", "USD", "yes"],
+        ["Net Bookable Total", 3749.92, 3749.92, "yes"]
       ],
       lines: [
         { poSku: "F5-UPG-SFP28-SR", desc: "Field upgrade: SFP28 transceiver 25G-SR", qty: 4, total: 3749.92, sfSku: "F5-UPG-SFP28-SR", sfTotal: 3749.92, match: "yes" }
@@ -1081,35 +1089,33 @@ textarea.form-control {
       ]
     },
     {
-      id: "dell", po: "PO706839", from: "Dell USA LP", channel: "Direct Deal",
+      id: "dell", po: "PO706839", from: "Dell USA LP", channel: "Direct Enterprise",
       file: "PO706839.pdf", received: "09:40 AM", poDate: "May 8, 2025",
       quote: "F5Q-00972677", opportunity: "006Po00000efMf3IAE", status: "review",
-      summary: "$1,400.00 freight pass-through charge on PO not present in quote total.",
+      summary: "$1,400.00 extra freight pass-through on PO Line 2. Hardware lines match quote perfectly.",
       checklist: [
-        ["pass", "F5 Corp Entity Match", "Issued to F5, Inc."],
-        ["pass", "Valid PO Number", "PO# PO706839"],
-        ["pass", "Payment Terms", "NET 90"],
+        ["pass", "F5 Corporate Entity Verification", "Issued to F5, Inc."],
+        ["pass", "Purchase Order Identifier", "Valid unique PO# PO706839"],
+        ["pass", "Commercial Credit Terms", "NET 90"],
         ["pass", "Single Bill-To Entity", "Dell USA LP"],
-        ["flag", "Ship-To Contact", "Missing contact phone for Shiner Lab"],
-        ["flag", "End User Verification", "No distinct End User specified (Dell Internal)"],
-        ["na", "Direct Reseller", "Direct Customer Deal"],
-        ["pass", "IncoTerms", "FCA Ship Point"],
-        ["pass", "Product Total", "$73,444.80 matches F5 hardware quote"],
-        ["flag", "Freight Variance", "PO has $1,400.00 extra on Line 2 for shipping"],
-        ["pass", "Duplicate PO Check", "New unique PO"]
+        ["warn", "Ship-To Contact Phone", "Missing phone for Shiner Lab contact"],
+        ["warn", "End User Customer Details", "Dell internal lab usage (no external entity)"],
+        ["pass", "Accepted IncoTerms", "FCA Ship Point"],
+        ["pass", "Catalog SKU Validation", "Hardware lines match quote amount"],
+        ["fail", "Unquoted Line Item Found", "Line 2 has $1,400.00 freight not in CPQ Quote"]
       ],
       flags: [
-        { id: "d1", title: "$1,400.00 freight pass-through charge", detail: "PO includes $1,400 shipping charges. Book at Quote hardware total ($73,444.80) and attach RO Note." },
+        { id: "d1", title: "$1,400.00 freight pass-through charge on PO", detail: "PO includes $1,400 shipping charges. Book at Quote hardware total ($73,444.80) and attach RO Note." },
         { id: "d2", title: "End User details missing on PO", detail: "Checklist allows adding End User info as an RO Note." }
       ],
       compare: [
-        ["CPQ Quote Number", "F5Q-00972677", "F5Q-00972677", "yes"],
-        ["Salesforce Opportunity", "006Po00000efMf3IAE", "006Po00000efMf3IAE", "yes"],
-        ["Order Net Total", 74844.80, 73444.80, "no"]
+        ["CPQ Quote Reference", "F5Q-00972677", "F5Q-00972677", "yes"],
+        ["Opportunity Target", "006Po00000efMf3IAE", "006Po00000efMf3IAE", "yes"],
+        ["Net Bookable Total", 74844.80, 73444.80, "no"]
       ],
       lines: [
-        { poSku: "(Not Available)", desc: "VELOS field upgrade: QSFP28 transceiver (100G-SR4)", qty: 20, total: 73444.80, sfSku: "F5-UPGVELQSFP28-SR4", sfTotal: 73444.80, match: "amount" },
-        { poSku: "SHIPPING", desc: "Material Shipping Charges", qty: 1400, total: 1400.00, sfSku: "(None - Pass-through)", sfTotal: 0.00, match: "no" }
+        { poSku: "(Printed Not Available)", desc: "VELOS upgrade: QSFP28 transceiver (100G-SR4)", qty: 20, total: 73444.80, sfSku: "F5-UPGVELQSFP28-SR4", sfTotal: 73444.80, match: "amount" },
+        { poSku: "SHIPPING", desc: "Material Shipping Charges", qty: 1400, total: 1400.00, sfSku: "(Unquoted Charge)", sfTotal: 0.00, match: "no" }
       ],
       booking: {
         opportunity: "006Po00000efMf3IAE", amount: 73444.80, orderType: "Standard",
@@ -1121,30 +1127,27 @@ textarea.form-control {
       ]
     },
     {
-      id: "paypal", po: "5100098997", from: "PayPal Inc", channel: "Direct Deal",
+      id: "paypal", po: "5100098997", from: "PayPal Inc", channel: "Direct Enterprise",
       file: "PayPal_PO_5100098997.pdf", received: "09:15 AM", poDate: "Jun 17, 2025",
       quote: "F5Q-00986557", opportunity: "006Po00000bh75lIAA", status: "review",
-      summary: "Lines reconciled by amount ($67,081.60). IncoTerms FOB Destination flagged.",
+      summary: "Custom customer part numbers matched to CPQ by pricing ($67,081.60). Destination terms flagged.",
       checklist: [
-        ["pass", "F5 Corp Entity Match", "Issued to F5, Inc."],
-        ["pass", "Valid PO Number", "PO# 5100098997"],
-        ["pass", "Payment Terms", "NET 45"],
+        ["pass", "F5 Corporate Entity Verification", "Issued to F5, Inc."],
+        ["pass", "Purchase Order Identifier", "Valid unique PO# 5100098997"],
+        ["pass", "Commercial Credit Terms", "NET 45"],
         ["pass", "Single Bill-To Entity", "PayPal Inc"],
-        ["flag", "Ship-To Contact Phone", "Contact name present; missing phone"],
-        ["flag", "End User Block", "End user not declared separately"],
-        ["na", "Direct Reseller", "Direct Customer Deal"],
-        ["flag", "IncoTerms Verification", "'FOB destination' requires SOS sign-off"],
-        ["pass", "Product Total", "$67,081.60 matched to Cent"],
-        ["pass", "Mathematical Reconciliation", "All lines balance"],
-        ["pass", "Duplicate PO Check", "Unique PO"]
+        ["warn", "Ship-To Contact Phone", "Contact name present; missing phone"],
+        ["warn", "End User Customer Details", "PayPal internal deployment"],
+        ["warn", "IncoTerms Compliance", "'FOB destination' requires SOS sign-off"],
+        ["pass", "Catalog SKU Validation", "Pricing matches CPQ quote exactly"]
       ],
       flags: [
         { id: "p1", title: "Destination IncoTerms 'FOB destination'", detail: "F5 standard policy requires SOS acknowledgement for destination terms." }
       ],
       compare: [
-        ["CPQ Quote Number", "F5Q-00986557", "F5Q-00986557", "yes"],
-        ["Salesforce Opportunity", "006Po00000bh75lIAA", "006Po00000bh75lIAA", "yes"],
-        ["Order Net Total", 67081.60, 67081.60, "yes"]
+        ["CPQ Quote Reference", "F5Q-00986557", "F5Q-00986557", "yes"],
+        ["Opportunity Target", "006Po00000bh75lIAA", "006Po00000bh75lIAA", "yes"],
+        ["Net Bookable Total", 67081.60, 67081.60, "yes"]
       ],
       lines: [
         { poSku: "061925.1MG", desc: "BIG-IP Virtual Edition: Local Traffic Manager 1G", qty: 1, total: 63148.43, sfSku: "F5-BIG-LTM-VE-1G-V18", sfTotal: 63148.43, match: "amount" },
@@ -1159,30 +1162,25 @@ textarea.form-control {
       ]
     },
     {
-      id: "synnex", po: "TD-00000-Z", from: "TD SYNNEX", channel: "Distributor",
+      id: "synnex", po: "TD-00000-Z", from: "TD SYNNEX Corporation", channel: "Distributor",
       file: "TD_SYNNEX_PO.pdf", received: "Yesterday", poDate: "Mar 15, 2026",
       quote: "F5Q-99999999", opportunity: "", status: "return",
-      summary: "Referenced quote F5Q-99999999 not found in Snowflake/Salesforce CPQ records.",
+      summary: "Referenced quote F5Q-99999999 does not exist in F5 CPQ or Snowflake records.",
       checklist: [
-        ["pass", "F5 Corp Entity Match", "Issued to F5, Inc."],
-        ["pass", "Valid PO Number", "PO# TD-00000-Z"],
-        ["pass", "Payment Terms", "NET 45"],
-        ["pass", "Bill-To Entity", "TD SYNNEX Corporation"],
-        ["pass", "Ship-To Complete", "Physical address & contact complete"],
-        ["pass", "End User Declared", "Contoso Corporation"],
-        ["na", "Direct Reseller", "Distributor transaction"],
-        ["pass", "IncoTerms", "EXW"],
-        ["flag", "Quote Existence", "Quote F5Q-99999999 NOT FOUND in F5 system"],
-        ["pass", "PO Total Present", "$24,242.10 stated"],
-        ["pass", "Carrier Details", "UPS Ground Collect"]
+        ["pass", "F5 Corporate Entity Verification", "Issued to F5, Inc."],
+        ["pass", "Purchase Order Identifier", "Valid unique PO# TD-00000-Z"],
+        ["pass", "Commercial Credit Terms", "NET 45"],
+        ["pass", "Single Bill-To Entity", "TD SYNNEX Corporation"],
+        ["pass", "Physical Ship-To Verification", "Complete physical address and contact"],
+        ["fail", "CPQ Quote Validation", "Quote F5Q-99999999 NOT FOUND in F5 system"]
       ],
       flags: [
         { id: "s1", title: "CPQ Quote F5Q-99999999 does not exist", detail: "Polled Snowflake Enterprise Raw replicas for 24 hours. Reseller must provide valid CPQ Quote." }
       ],
       compare: [
-        ["CPQ Quote Number", "F5Q-99999999", "NOT FOUND", "no"],
-        ["Salesforce Opportunity", "Missing", "Unresolved", "na"],
-        ["Order Net Total", 24242.10, "No Quote to Compare", "na"]
+        ["CPQ Quote Reference", "F5Q-99999999", "NOT FOUND", "no"],
+        ["Opportunity Target", "Unresolved", "Unresolved", "na"],
+        ["Net Bookable Total", 24242.10, "No Quote to Compare", "na"]
       ],
       lines: [
         { poSku: "F5-BIG-VE-BTA-25MV18", desc: "BIG-IP VE Best Bundle 25 Mbps", qty: 2, total: 20165.04, sfSku: "(Unresolved)", sfTotal: 0, match: "no" }
@@ -1193,295 +1191,369 @@ textarea.form-control {
   ];
 
   /* State Storage */
-  var STORAGE_KEY = "f5_sos_console_v2";
-  var moneyFmt = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" });
-  function fmtUSD(val) { return typeof val === "number" ? moneyFmt.format(val) : (val || ""); }
-  function esc(s) { return String(s || "").replace(/[&<>"']/g, function(m) { return { "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[m]; }); }
+  var STORAGE_KEY = "f5_sos_v3_state";
+  var usdFormatter = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" });
+  function fmtMoney(v) { return typeof v === "number" ? usdFormatter.format(v) : (v || ""); }
+  function escapeHtml(str) { return String(str || "").replace(/[&<>"']/g, function(m) { return { "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[m]; }); }
 
-  function getSavedState() {
+  function loadState() {
     try {
       var raw = localStorage.getItem(STORAGE_KEY);
       if (raw) return JSON.parse(raw);
     } catch(e) {}
     return {
       activeTab: "all",
+      searchQuery: "",
       view: { type: "queue" },
-      orders: JSON.parse(JSON.stringify(SEED_DATA)).map(function(o) {
+      orders: JSON.parse(JSON.stringify(SAMPLE_ORDERS)).map(function(o) {
         o.reviewedFlags = [];
-        o.edits = {};
-        o.actionRecord = null;
+        o.detailTab = "reconcile";
         return o;
       })
     };
   }
 
-  var state = getSavedState();
-  function persistState() {
-    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); } catch(e) {}
+  var appState = loadState();
+  function saveState() {
+    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(appState)); } catch(e) {}
   }
 
-  function getOrder(id) {
-    for (var i = 0; i < state.orders.length; i++) {
-      if (state.orders[i].id === id) return state.orders[i];
+  function getOrderById(id) {
+    for (var i = 0; i < appState.orders.length; i++) {
+      if (appState.orders[i].id === id) return appState.orders[i];
     }
     return null;
   }
 
-  function showToast(msg) {
-    var t = document.getElementById("toastBox");
-    t.innerText = msg;
-    t.classList.add("show");
-    setTimeout(function() { t.classList.remove("show"); }, 3000);
+  function notifyToast(text) {
+    var toast = document.getElementById("toastAlert");
+    toast.innerText = text;
+    toast.classList.add("visible");
+    setTimeout(function() { toast.classList.remove("visible"); }, 2800);
   }
 
-  /* ---------------------------------------------------- RENDER WORK QUEUE */
+  /* ---------------------------------------------------------------- RENDER QUEUE */
   function renderQueueView() {
-    var orders = state.orders;
+    var orders = appState.orders;
+    var q = (appState.searchQuery || "").toLowerCase();
+
+    // Filter by Search Query
+    if (q) {
+      orders = orders.filter(function(o) {
+        return o.po.toLowerCase().indexOf(q) > -1 ||
+               o.from.toLowerCase().indexOf(q) > -1 ||
+               o.quote.toLowerCase().indexOf(q) > -1 ||
+               (o.opportunity && o.opportunity.toLowerCase().indexOf(q) > -1);
+      });
+    }
+
+    // Filter by Active Tab
     var filtered = orders;
-    if (state.activeTab === "ready") filtered = orders.filter(function(o){ return o.status === "ready"; });
-    else if (state.activeTab === "review") filtered = orders.filter(function(o){ return o.status === "review"; });
-    else if (state.activeTab === "return") filtered = orders.filter(function(o){ return o.status === "return"; });
-    else if (state.activeTab === "booked") filtered = orders.filter(function(o){ return o.status === "booked"; });
+    if (appState.activeTab === "ready") filtered = orders.filter(function(o){ return o.status === "ready"; });
+    else if (appState.activeTab === "review") filtered = orders.filter(function(o){ return o.status === "review"; });
+    else if (appState.activeTab === "return") filtered = orders.filter(function(o){ return o.status === "return"; });
+    else if (appState.activeTab === "booked") filtered = orders.filter(function(o){ return o.status === "booked"; });
 
-    var totalReady = orders.filter(function(o){ return o.status === "ready"; }).length;
-    var totalReview = orders.filter(function(o){ return o.status === "review"; }).length;
-    var totalReturn = orders.filter(function(o){ return o.status === "return"; }).length;
-    var totalBooked = orders.filter(function(o){ return o.status === "booked"; }).length;
+    var totalReady = appState.orders.filter(function(o){ return o.status === "ready"; }).length;
+    var totalReview = appState.orders.filter(function(o){ return o.status === "review"; }).length;
+    var totalReturn = appState.orders.filter(function(o){ return o.status === "return"; }).length;
+    var totalBooked = appState.orders.filter(function(o){ return o.status === "booked"; }).length;
 
-    var html = '<div class="filter-toolbar">';
-    html += '<div class="filter-tabs">';
-    html += '<button type="button" class="filter-tab ' + (state.activeTab === "all" ? "active" : "") + '" data-tab="all">All Inbound <span class="tab-count">' + orders.length + '</span></button>';
-    html += '<button type="button" class="filter-tab ' + (state.activeTab === "ready" ? "active" : "") + '" data-tab="ready">⚡ Ready to Book <span class="tab-count">' + totalReady + '</span></button>';
-    html += '<button type="button" class="filter-tab ' + (state.activeTab === "review" ? "active" : "") + '" data-tab="review">⚠️ Needs Review <span class="tab-count">' + totalReview + '</span></button>';
-    html += '<button type="button" class="filter-tab ' + (state.activeTab === "return" ? "active" : "") + '" data-tab="return">🛑 Reseller Action <span class="tab-count">' + totalReturn + '</span></button>';
-    html += '<button type="button" class="filter-tab ' + (state.activeTab === "booked" ? "active" : "") + '" data-tab="booked">✅ Booked Today <span class="tab-count">' + totalBooked + '</span></button>';
+    var html = '<div>';
+
+    // 1. Executive KPI Cards
+    html += '<section class="kpi-grid">';
+    html += '<div class="kpi-stat-card card-blue">';
+    html += '<div class="kpi-header"><span class="kpi-title">Inbound Stream</span><div class="kpi-icon icon-blue">📥</div></div>';
+    html += '<div class="kpi-stat-value">' + appState.orders.length + ' Orders</div>';
+    html += '<div class="kpi-stat-footer"><span class="kpi-pill icon-blue">Auto-Ingest</span> Live PowerAutomate Blob</div>';
     html += '</div>';
-    html += '<div><button type="button" class="btn-secondary" onclick="window.location.reload()">🔄 Refresh Stream</button></div>';
+
+    html += '<div class="kpi-stat-card card-green">';
+    html += '<div class="kpi-header"><span class="kpi-title">Clean Auto-Matches</span><div class="kpi-icon icon-green">⚡</div></div>';
+    html += '<div class="kpi-stat-value" style="color:var(--status-success);">' + totalReady + ' Ready</div>';
+    html += '<div class="kpi-stat-footer"><span class="kpi-pill icon-green">100% Match</span> Direct 1-Click Booking</div>';
     html += '</div>';
 
-    html += '<div class="slds-table-card">';
-    html += '<table class="enterprise-table">';
+    html += '<div class="kpi-stat-card card-amber">';
+    html += '<div class="kpi-header"><span class="kpi-title">Pending Review</span><div class="kpi-icon icon-amber">⚠️</div></div>';
+    html += '<div class="kpi-stat-value" style="color:var(--status-warning);">' + totalReview + ' Flagged</div>';
+    html += '<div class="kpi-stat-footer"><span class="kpi-pill icon-amber">SOS Triage</span> Price/IncoTerms Exception</div>';
+    html += '</div>';
+
+    html += '<div class="kpi-stat-card card-red">';
+    html += '<div class="kpi-header"><span class="kpi-title">Quote Missing</span><div class="kpi-icon icon-red">🛑</div></div>';
+    html += '<div class="kpi-stat-value" style="color:var(--status-danger);">' + totalReturn + ' Blocked</div>';
+    html += '<div class="kpi-stat-footer"><span class="kpi-pill icon-red">Reseller Action</span> Auto-draft Discrepancy</div>';
+    html += '</div>';
+
+    html += '<div class="kpi-stat-card card-navy">';
+    html += '<div class="kpi-header"><span class="kpi-title">Processing Velocity</span><div class="kpi-icon icon-navy">⚡</div></div>';
+    html += '<div class="kpi-stat-value" style="color:var(--f5-blue-600);">< 1.8s</div>';
+    html += '<div class="kpi-stat-footer">Snowflake RAW replica latency</div>';
+    html += '</div>';
+    html += '</section>';
+
+    // 2. Datatable Container
+    html += '<div class="content-card">';
+    html += '<div class="queue-header-bar">';
+    html += '<div class="segmented-filters">';
+    html += '<button type="button" class="seg-tab-btn ' + (appState.activeTab === "all" ? "active" : "") + '" data-seg-tab="all">All Inbound <span class="badge-count">' + appState.orders.length + '</span></button>';
+    html += '<button type="button" class="seg-tab-btn ' + (appState.activeTab === "ready" ? "active" : "") + '" data-seg-tab="ready">⚡ Ready to Book <span class="badge-count">' + totalReady + '</span></button>';
+    html += '<button type="button" class="seg-tab-btn ' + (appState.activeTab === "review" ? "active" : "") + '" data-seg-tab="review">⚠️ Needs Review <span class="badge-count">' + totalReview + '</span></button>';
+    html += '<button type="button" class="seg-tab-btn ' + (appState.activeTab === "return" ? "active" : "") + '" data-seg-tab="return">🛑 Reseller Action <span class="badge-count">' + totalReturn + '</span></button>';
+    html += '<button type="button" class="seg-tab-btn ' + (appState.activeTab === "booked" ? "active" : "") + '" data-seg-tab="booked">✅ Booked Today <span class="badge-count">' + totalBooked + '</span></button>';
+    html += '</div>';
+
+    html += '<div class="table-toolbar-actions">';
+    html += '<button type="button" class="btn-action-outline" id="refreshStreamBtn">🔄 Refresh Sync</button>';
+    html += '</div>';
+    html += '</div>';
+
+    // 3. Table
+    html += '<table class="modern-table">';
     html += '<thead><tr>';
-    html += '<th>Purchase Order</th>';
-    html += '<th>Reseller / Customer</th>';
+    html += '<th>Purchase Order #</th>';
+    html += '<th>Partner / Channel</th>';
     html += '<th>CPQ Quote / Opp</th>';
-    html += '<th style="text-align:right;">PO Amount</th>';
-    html += '<th>Validation Assessment</th>';
-    html += '<th>Received</th>';
-    html += '<th style="text-align:right;">Actions</th>';
+    html += '<th style="text-align:right;">Extracted Amount</th>';
+    html += '<th>Automated Policy Assessment</th>';
+    html += '<th>Timestamp</th>';
+    html += '<th style="text-align:right;">Action</th>';
     html += '</tr></thead><tbody>';
 
     if (!filtered.length) {
-      html += '<tr><td colspan="7" style="text-align:center; padding: 40px; color: var(--text-muted); font-style:italic;">No purchase orders currently in this view.</td></tr>';
+      html += '<tr><td colspan="7" style="text-align:center; padding: 48px; color: var(--text-muted); font-style:italic;">No purchase orders match the selected filter.</td></tr>';
     } else {
       filtered.forEach(function(o) {
-        var badge = '<span class="slds-badge badge-ok">✓ READY TO BOOK</span>';
-        if (o.status === "review") badge = '<span class="slds-badge badge-warn">⚠️ NEEDS REVIEW (' + o.flags.length + ')</span>';
-        else if (o.status === "return") badge = '<span class="slds-badge badge-bad">🛑 RESPEC / RETURN</span>';
-        else if (o.status === "booked") badge = '<span class="slds-badge badge-muted">✅ BOOKED IN SFDC</span>';
+        var statusBadge = '<span class="status-pill status-ready">✓ READY TO BOOK</span>';
+        if (o.status === "review") statusBadge = '<span class="status-pill status-review">⚠️ NEEDS REVIEW (' + o.flags.length + ')</span>';
+        else if (o.status === "return") statusBadge = '<span class="status-pill status-return">🛑 QUOTE NOT FOUND</span>';
+        else if (o.status === "booked") statusBadge = '<span class="status-pill status-booked">✅ BOOKED IN SFDC</span>';
 
-        var totalVal = o.booking ? o.booking.amount : o.compare.find(function(c){ return c[0] === "Order Net Total"; })[1];
+        var orderTotal = o.booking ? o.booking.amount : o.compare.find(function(c){ return c[0].indexOf("Total") > -1; })[1];
 
-        html += '<tr class="clickable-row" data-open="' + o.id + '">';
-        html += '<td class="po-badge-cell"><strong>' + esc(o.po) + '</strong><span>' + esc(o.file) + '</span></td>';
-        html += '<td><strong>' + esc(o.from) + '</strong><br><span class="channel-pill">' + esc(o.channel) + '</span></td>';
-        html += '<td><code>' + esc(o.quote) + '</code><br><span style="font-size:11px;color:var(--text-muted);">' + esc(o.opportunity || "Unresolved") + '</span></td>';
-        html += '<td class="amount-cell">' + fmtUSD(totalVal) + '</td>';
-        html += '<td>' + badge + '<br><span style="font-size:11.5px;color:var(--text-muted);">' + esc(o.summary) + '</span></td>';
-        html += '<td style="color:var(--text-muted);font-size:12px;">' + esc(o.received) + '</td>';
-        html += '<td style="text-align:right;"><button type="button" class="btn-table-action" data-open="' + o.id + '">Review & Book ➔</button></td>';
+        html += '<tr>';
+        html += '<td><div class="po-number-cell">';
+        html += '<div class="pdf-icon-badge">PDF</div>';
+        html += '<div class="po-text-info"><strong>' + escapeHtml(o.po) + '</strong><span>' + escapeHtml(o.file) + '</span></div>';
+        html += '</div></td>';
+
+        html += '<td><div class="reseller-info-cell">';
+        html += '<strong>' + escapeHtml(o.from) + '</strong><br>';
+        html += '<span class="channel-pill">' + escapeHtml(o.channel) + '</span>';
+        html += '</div></td>';
+
+        html += '<td><div class="quote-mono-cell">';
+        html += '<code>' + escapeHtml(o.quote) + '</code><br>';
+        html += '<span style="font-size:11px;color:var(--text-muted);font-family:monospace;">' + escapeHtml(o.opportunity || "Not Assigned") + '</span>';
+        html += '</div></td>';
+
+        html += '<td class="amount-mono-cell">' + fmtMoney(orderTotal) + '</td>';
+        html += '<td>' + statusBadge + '<br><span style="font-size:11.5px;color:var(--text-muted);display:inline-block;margin-top:3px;">' + escapeHtml(o.summary) + '</span></td>';
+        html += '<td style="color:var(--text-muted);font-size:12px;">' + escapeHtml(o.received) + '</td>';
+        html += '<td style="text-align:right;"><button type="button" class="btn-action-primary" data-open-order="' + o.id + '">Inspect & Book ➔</button></td>';
         html += '</tr>';
       });
     }
 
-    html += '</tbody></table></div>';
+    html += '</tbody></table></div></div>';
     return html;
   }
 
-  /* ---------------------------------------------------- RENDER RECORD DETAIL */
+  /* ---------------------------------------------------------------- RENDER DETAIL WORKSPACE */
   function renderDetailView(o) {
     var openFlags = o.flags.filter(function(f){ return (o.reviewedFlags || []).indexOf(f.id) === -1; });
-    var isReady = o.status === "ready" || (o.status === "review" && openFlags.length === 0);
+    var isApprovable = o.status === "ready" || (o.status === "review" && openFlags.length === 0);
     var isBooked = o.status === "booked";
+    var activeTab = o.detailTab || "reconcile";
 
     var html = '<div>';
-    // Breadcrumb Back Button
-    html += '<div style="margin-bottom:12px;">';
-    html += '<button type="button" class="btn-secondary" data-back style="font-size:12px;padding:4px 10px;">← Back to Work Queue</button>';
+
+    // 1. Top Hero Card
+    html += '<div class="detail-hero-card">';
+    html += '<div class="detail-top-nav">';
+    html += '<div class="breadcrumb-trail">';
+    html += '<button type="button" class="breadcrumb-btn" id="backToQueueBtn">← Back to Inbound Queue</button>';
+    html += '<span>/</span>';
+    html += '<span>Purchase Order ' + escapeHtml(o.po) + '</span>';
     html += '</div>';
 
-    // 1. Record Highlights Header
-    html += '<div class="record-header-card">';
-    html += '<div class="record-top-row">';
-    html += '<div class="record-title-area">';
-    html += '<div class="record-icon">📄</div>';
-    html += '<div>';
-    html += '<h1 class="record-title">Purchase Order #' + esc(o.po) + '</h1>';
-    html += '<p class="record-subtitle">' + esc(o.from) + ' (' + esc(o.channel) + ') &bull; PO Date: ' + esc(o.poDate) + ' &bull; Ingest File: <code>' + esc(o.file) + '</code></p>';
-    html += '</div>';
-    html += '</div>';
-
-    html += '<div class="record-actions">';
+    // Quick Action Buttons
+    html += '<div style="display:flex;gap:10px;">';
     if (!isBooked) {
       if (o.status === "return") {
-        html += '<button type="button" class="btn-danger-outline" data-action="return">✉️ Draft Reseller Return Email</button>';
+        html += '<button type="button" class="btn-action-outline" data-action="return" style="color:var(--status-danger);border-color:var(--status-danger-border);">✉️ Draft Reseller Return Email</button>';
       } else {
-        html += '<button type="button" class="btn-danger-outline" data-action="return">✉️ Return to Reseller</button>';
-        html += '<button type="button" class="btn-primary" data-action="approve" ' + (!isReady ? 'disabled title="Acknowledge flagged items first"' : '') + '>⚡ 1-Click Salesforce Booking</button>';
+        html += '<button type="button" class="btn-action-outline" data-action="return">✉️ Return to Reseller</button>';
+        html += '<button type="button" class="btn-action-primary" data-action="approve" ' + (!isApprovable ? 'disabled style="opacity:0.5;cursor:not-allowed;" title="Review all flagged exceptions first"' : '') + '>⚡ 1-Click Salesforce Booking</button>';
       }
     } else {
-      html += '<span class="slds-badge badge-ok" style="font-size:13px;padding:6px 14px;">✅ Booking Form Generated in Salesforce</span>';
+      html += '<span class="status-pill status-ready" style="font-size:13px;padding:6px 14px;">✅ Booking Form Active in Salesforce</span>';
     }
     html += '</div>';
     html += '</div>';
 
-    // 2. Chevron Pipeline Path
-    html += '<div class="path-container">';
-    html += '<div class="path-step completed">1. Inbound Ingest (Blob) ✓</div>';
-    html += '<div class="path-step completed">2. PDF Extraction ✓</div>';
-    html += '<div class="path-step completed">3. Snowflake CPQ Cross-Check ✓</div>';
-    html += '<div class="path-step ' + (isBooked ? "completed" : "current") + '">4. SOS Policy Review ' + (isBooked ? "✓" : "") + '</div>';
-    html += '<div class="path-step ' + (isBooked ? "current" : "upcoming") + '">5. Salesforce Booking Form ' + (isBooked ? "✓" : "") + '</div>';
+    // Hero Title
+    html += '<div class="detail-main-header">';
+    html += '<div class="po-hero-title-group">';
+    html += '<h1>Purchase Order #' + escapeHtml(o.po) + ' <span class="status-pill ' + (o.status === "ready" ? "status-ready" : (o.status === "review" ? "status-review" : (o.status === "return" ? "status-return" : "status-booked"))) + '">' + (o.status === "ready" ? "✓ 100% MATCH" : (o.status === "review" ? "⚠️ EXCEPTION FLAGGED" : (o.status === "return" ? "🛑 INVALID QUOTE" : "✅ BOOKED"))) + '</span></h1>';
+    html += '<p class="po-hero-sub">' + escapeHtml(o.from) + ' (' + escapeHtml(o.channel) + ') &bull; PO Date: ' + escapeHtml(o.poDate) + ' &bull; Ingest Source: <code>' + escapeHtml(o.file) + '</code></p>';
+    html += '</div>';
     html += '</div>';
 
-    // 3. Compact Key Fields
-    var totalVal = o.booking ? o.booking.amount : 0;
-    html += '<div class="compact-fields-grid">';
-    html += '<div class="cf-item"><label>Salesforce Opportunity</label><div class="cf-val"><code>' + esc(o.opportunity || "Not Linked") + '</code></div></div>';
-    html += '<div class="cf-item"><label>CPQ Quote</label><div class="cf-val"><code>' + esc(o.quote) + '</code></div></div>';
-    html += '<div class="cf-item"><label>Total Booked Amount</label><div class="cf-val" style="color:var(--f5-navy);">' + fmtUSD(totalVal) + '</div></div>';
-    html += '<div class="cf-item"><label>Order Type</label><div class="cf-val">' + esc(o.booking ? o.booking.orderType : "Standard") + '</div></div>';
-    html += '<div class="cf-item"><label>Stage Target</label><div class="cf-val" style="color:var(--f5-blue);">In Process by SOS</div></div>';
+    // Workflow Chevron Stepper
+    html += '<div class="workflow-stepper">';
+    html += '<div class="step-item step-done">1. Inbound Ingest ✓</div>';
+    html += '<div class="step-item step-done">2. Generic PDF Parse ✓</div>';
+    html += '<div class="step-item step-done">3. Snowflake Cross-Check ✓</div>';
+    html += '<div class="step-item ' + (isBooked ? "step-done" : "step-active") + '">4. SOS Policy Review ' + (isBooked ? "✓" : "") + '</div>';
+    html += '<div class="step-item ' + (isBooked ? "step-active" : "") + '">5. SFDC Booking Form ' + (isBooked ? "✓" : "") + '</div>';
     html += '</div>';
-    html += '</div>'; // End Header Card
 
-    // Attention Banner
+    // Attribute Ribbon
+    var totalVal = o.booking ? o.booking.amount : o.compare.find(function(c){ return c[0].indexOf("Total") > -1; })[1];
+    html += '<div class="quick-attributes-grid">';
+    html += '<div class="qa-box"><label>CPQ Quote</label><div class="qa-val"><code>' + escapeHtml(o.quote) + '</code></div></div>';
+    html += '<div class="qa-box"><label>Salesforce Opp ID</label><div class="qa-val"><code>' + escapeHtml(o.opportunity || "Not Assigned") + '</code></div></div>';
+    html += '<div class="qa-box"><label>Net Reconciled Amount</label><div class="qa-val" style="color:var(--f5-blue-600);font-family:monospace;">' + fmtMoney(totalVal) + '</div></div>';
+    html += '<div class="qa-box"><label>Order Type</label><div class="qa-val">' + escapeHtml(o.booking ? o.booking.orderType : "Standard") + '</div></div>';
+    html += '<div class="qa-box"><label>SFDC Target Stage</label><div class="qa-val" style="color:var(--status-success);">In Process by SOS</div></div>';
+    html += '</div>';
+    html += '</div>'; // End Hero Card
+
+    // Alert Callout
     if (o.status === "review") {
-      html += '<div class="attention-banner review">';
-      html += '<div><strong>⚠️ Action Required by SOS:</strong> ' + openFlags.length + ' of ' + o.flags.length + ' policy exception(s) require review before pushing to Salesforce.</div>';
+      html += '<div class="alert-callout-box alert-review">';
+      html += '<div><strong>⚠️ Action Required by SOS:</strong> ' + openFlags.length + ' item(s) flagged for human verification. Acknowledge each item below or return the order to the reseller.</div>';
       html += '</div>';
     } else if (o.status === "ready") {
-      html += '<div class="attention-banner ready">';
-      html += '<div><strong>✓ 100% Validated:</strong> All line items, prices, and entity blocks match CPQ Quote ' + esc(o.quote) + '. Ready for instant Salesforce booking.</div>';
+      html += '<div class="alert-callout-box alert-ready">';
+      html += '<div><strong>✓ Ready for Immediate Booking:</strong> 100% reconciliation against CPQ quote ' + escapeHtml(o.quote) + '. Click "1-Click Salesforce Booking" above.</div>';
       html += '</div>';
     } else if (o.status === "return") {
-      html += '<div class="attention-banner return">';
-      html += '<div><strong>🛑 Non-Bookable Order:</strong> Quote ' + esc(o.quote) + ' not found in F5 CPQ database. Send discrepancy notice to reseller.</div>';
+      html += '<div class="alert-callout-box alert-return">';
+      html += '<div><strong>🛑 Non-Bookable Order:</strong> Referenced quote ' + escapeHtml(o.quote) + ' does not exist in F5 CPQ database. Discrepancy email drafted below.</div>';
       html += '</div>';
     }
 
-    // Flag Review Box (if any)
+    // Flagged Exceptions Card
     if (o.flags.length && !isBooked) {
-      html += '<div class="panel-card attention-card">';
-      html += '<div class="panel-header"><h3 class="panel-title">🛡️ Policy Exceptions Requiring SOS Acknowledgement (' + o.flags.length + ')</h3></div>';
-      html += '<div class="panel-body">';
+      html += '<div class="content-card" style="margin-bottom:24px;border-left:4px solid var(--status-warning);">';
+      html += '<div style="padding:14px 20px;background:#FFFDF7;border-bottom:1px solid var(--border-light);display:flex;justify-content:space-between;align-items:center;">';
+      html += '<strong style="color:var(--status-warning);font-size:13.5px;">🛡️ Policy Exceptions Requiring SOS Acknowledgement (' + o.flags.length + ')</strong>';
+      html += '<span style="font-size:12px;color:var(--text-muted);">' + (o.flags.length - openFlags.length) + ' of ' + o.flags.length + ' resolved</span>';
+      html += '</div>';
+      html += '<div style="padding:16px 20px;">';
       o.flags.forEach(function(f) {
         var isDone = (o.reviewedFlags || []).indexOf(f.id) > -1;
-        html += '<div class="flag-item-box ' + (isDone ? "resolved" : "") + '">';
+        html += '<div style="background:#FFFFFF;border:1px solid var(--border-light);border-radius:var(--radius-md);padding:12px 16px;margin-bottom:10px;display:flex;justify-content:space-between;align-items:center;">';
         html += '<div>';
-        html += '<strong style="color:var(--text-main);font-size:13px;">' + esc(f.title) + '</strong>';
-        html += '<p style="margin:2px 0 0;font-size:12px;color:var(--text-muted);">' + esc(f.detail) + '</p>';
+        html += '<div style="font-weight:700;color:var(--text-heading);font-size:13.5px;">' + escapeHtml(f.title) + '</div>';
+        html += '<div style="font-size:12px;color:var(--text-muted);margin-top:2px;">' + escapeHtml(f.detail) + '</div>';
         html += '</div>';
         if (isDone) {
-          html += '<span style="color:var(--status-ok);font-weight:700;font-size:12px;">✓ Acknowledged (<a href="#" data-undo-flag="' + f.id + '" style="color:var(--text-muted);">Undo</a>)</span>';
+          html += '<span style="color:var(--status-success);font-weight:700;font-size:12px;">✓ Acknowledged (<a href="#" data-undo-flag="' + f.id + '" style="color:var(--text-muted);">Undo</a>)</span>';
         } else {
-          html += '<button type="button" class="btn-secondary" style="font-size:11.5px;padding:4px 10px;" data-ack-flag="' + f.id + '">Acknowledge Exception</button>';
+          html += '<button type="button" class="btn-action-outline" data-ack-flag="' + f.id + '" style="font-size:11.5px;padding:5px 10px;">Acknowledge Exception</button>';
         }
         html += '</div>';
       });
       html += '</div></div>';
     }
 
-    // Split Content: Left = Reconciliation Table, Right = 38-Rule Checklist & Booking Form Draft
-    html += '<div class="split-content">';
+    // 2. Main Workspace Split (70% Stage / 30% Right Rail)
+    html += '<div class="workspace-grid">';
 
-    // LEFT COLUMN: Side-by-Side Reconciliation Table
+    // LEFT STAGE (70%)
     html += '<div>';
-    html += '<div class="panel-card">';
-    html += '<div class="panel-header">';
-    html += '<h3 class="panel-title">🔍 Side-by-Side CPQ Quote Reconciliation</h3>';
-    html += '<span style="font-size:11.5px;color:var(--text-muted);">PO vs. Snowflake CPQ</span>';
-    html += '</div>';
-    html += '<div style="padding:0;">';
-    html += '<table class="reconciliation-table">';
-    html += '<thead><tr><th>Header Attribute</th><th>Extracted from PO</th><th class="col-match-status">Match</th><th>Snowflake / CPQ Truth</th></tr></thead><tbody>';
-    o.compare.forEach(function(c) {
-      var isDiff = c[3] === "no";
-      html += '<tr class="' + (isDiff ? "row-diff" : "") + '">';
-      html += '<td><strong>' + esc(c[0]) + '</strong></td>';
-      html += '<td>' + (typeof c[1] === "number" ? fmtUSD(c[1]) : esc(c[1])) + '</td>';
-      html += '<td class="col-match-status">' + (c[3] === "yes" ? '<span style="color:var(--status-ok)">✓</span>' : (c[3] === "no" ? '<span style="color:var(--f5-red)">≠</span>' : '–')) + '</td>';
-      html += '<td>' + (typeof c[2] === "number" ? fmtUSD(c[2]) : esc(c[2])) + (isDiff ? '<span class="diff-highlight">Variance detected</span>' : '') + '</td>';
-      html += '</tr>';
-    });
-    html += '</tbody></table>';
-
-    // Line items sub-table
-    html += '<div style="padding:12px 16px 6px;background:#F8FAFD;border-top:1px solid var(--slds-border);font-size:12px;font-weight:700;color:var(--f5-navy);">';
-    html += 'Extracted Line Items Reconciliation';
-    html += '</div>';
-    html += '<table class="reconciliation-table">';
-    html += '<thead><tr><th>PO Part & Description</th><th style="text-align:right;">PO Ext Price</th><th class="col-match-status">Match</th><th>Matched CPQ SKU</th><th style="text-align:right;">CPQ Total</th></tr></thead><tbody>';
-    o.lines.forEach(function(l) {
-      var isDiff = l.match === "no";
-      html += '<tr class="' + (isDiff ? "row-diff" : "") + '">';
-      html += '<td><code>' + esc(l.poSku) + '</code><br><span style="font-size:11px;color:var(--text-muted);">' + esc(l.desc) + ' (Qty: ' + l.qty + ')</span></td>';
-      html += '<td style="text-align:right;font-family:monospace;">' + fmtUSD(l.total) + '</td>';
-      html += '<td class="col-match-status">' + (l.match === "yes" || l.match === "amount" ? '<span style="color:var(--status-ok)">✓</span>' : '<span style="color:var(--f5-red)">≠</span>') + '</td>';
-      html += '<td><code>' + esc(l.sfSku) + '</code></td>';
-      html += '<td style="text-align:right;font-family:monospace;">' + fmtUSD(l.sfTotal) + '</td>';
-      html += '</tr>';
-    });
-    html += '</tbody></table>';
-    html += '</div></div>';
-    html += '</div>'; // End Left Col
-
-    // RIGHT COLUMN: 38-Rule Checklist & Booking Form Draft
-    html += '<div>';
-
-    // Checklist Card
-    html += '<div class="panel-card">';
-    html += '<div class="panel-header">';
-    html += '<h3 class="panel-title">🛡️ SOS 38-Rule Policy Checklist</h3>';
-    html += '<span style="font-size:11.5px;color:var(--status-ok);font-weight:600;">Automated Evaluation</span>';
-    html += '</div>';
-    html += '<div class="panel-body">';
-    html += '<ul class="checklist-list">';
-    o.checklist.forEach(function(c) {
-      var icon = '<span class="ck-icon ck-pass">✓</span>';
-      if (c[0] === "flag") icon = '<span class="ck-icon ck-flag">!</span>';
-      else if (c[0] === "bad") icon = '<span class="ck-icon ck-bad">✕</span>';
-      else if (c[0] === "info" || c[0] === "na") icon = '<span class="ck-icon ck-info">–</span>';
-
-      html += '<li class="checklist-row">' + icon + '<div class="ck-text"><strong>' + esc(c[1]) + '</strong><span>' + esc(c[2]) + '</span></div></li>';
-    });
-    html += '</ul>';
+    html += '<div class="content-card">';
+    html += '<div style="padding:0 20px;background:#F8FAFC;border-bottom:1px solid var(--border-light);">';
+    html += '<div class="stage-tab-nav">';
+    html += '<button type="button" class="stage-tab-btn ' + (activeTab === "reconcile" ? "active" : "") + '" data-detail-tab="reconcile">🔍 Side-by-Side CPQ Reconciliation</button>';
+    html += '<button type="button" class="stage-tab-btn ' + (activeTab === "checklist" ? "active" : "") + '" data-detail-tab="checklist">🛡️ SOS 38-Rule Checklist (' + o.checklist.length + ' Checked)</button>';
     html += '</div></div>';
 
-    // Booking Form Draft Card
-    if (o.booking) {
-      html += '<div class="panel-card">';
-      html += '<div class="panel-header">';
-      html += '<h3 class="panel-title">📝 Salesforce Booking Form (Draft Payload)</h3>';
-      html += '<span style="font-size:11px;color:var(--text-muted);">Target: <code>Booking_Form__c</code></span>';
-      html += '</div>';
-      html += '<div class="panel-body">';
-      html += '<div class="form-grid">';
-      html += '<div class="form-group"><label>Booking Form Name</label><input type="text" class="form-control" value="BF-AUTO-' + esc(o.po) + '" readonly style="background:#F4F6F9;"></div>';
-      html += '<div class="form-group"><label>Opportunity ID</label><input type="text" class="form-control" value="' + esc(o.booking.opportunity) + '" readonly style="background:#F4F6F9;"></div>';
-      html += '<div class="form-group"><label>Total Booked Amount (USD)</label><input type="number" step="0.01" class="form-control" value="' + esc(o.booking.amount) + '" data-edit="amount"></div>';
-      html += '<div class="form-group"><label>Sales Order Type</label><input type="text" class="form-control" value="' + esc(o.booking.orderType) + '" data-edit="orderType"></div>';
-      html += '<div class="form-group"><label>Distributor</label><input type="text" class="form-control" value="' + esc(o.booking.distributor) + '" data-edit="distributor"></div>';
-      html += '<div class="form-group"><label>Reseller Partner</label><input type="text" class="form-control" value="' + esc(o.booking.reseller) + '" data-edit="reseller"></div>';
-      (o.notes || []).forEach(function(n, idx) {
-        html += '<div class="form-group full-width"><label>' + esc(n.title) + '</label><textarea class="form-control" data-note-idx="' + idx + '">' + esc(n.body) + '</textarea></div>';
+    html += '<div style="padding:20px;">';
+
+    // TAB A: Side-by-Side Reconciliation Table
+    if (activeTab === "reconcile") {
+      html += '<table class="diff-table">';
+      html += '<thead><tr><th>Header Attribute</th><th>Extracted from Vendor PO</th><th style="text-align:center;">Match</th><th>F5 CPQ Source of Truth</th></tr></thead><tbody>';
+      o.compare.forEach(function(c) {
+        var isDiff = c[3] === "no";
+        html += '<tr class="' + (isDiff ? "has-variance" : "") + '">';
+        html += '<td><strong>' + escapeHtml(c[0]) + '</strong></td>';
+        html += '<td>' + (typeof c[1] === "number" ? fmtMoney(c[1]) : escapeHtml(c[1])) + '</td>';
+        html += '<td style="text-align:center;font-weight:700;">' + (c[3] === "yes" ? '<span style="color:var(--status-success)">✓ Exact</span>' : (c[3] === "no" ? '<span style="color:var(--status-danger)">≠ Variance</span>' : '–')) + '</td>';
+        html += '<td>' + (typeof c[2] === "number" ? fmtMoney(c[2]) : escapeHtml(c[2])) + (isDiff ? '<span class="variance-tag">Discrepancy detected</span>' : '') + '</td>';
+        html += '</tr>';
+      });
+      html += '</tbody></table>';
+
+      // Line Items Diff
+      html += '<div style="margin-top:24px;border-top:1px solid var(--border-light);padding-top:16px;">';
+      html += '<h4 style="margin:0 0 12px;font-size:13px;font-weight:800;color:var(--text-heading);text-transform:uppercase;letter-spacing:0.04em;">Line Items Reconciled with CPQ</h4>';
+      html += '<table class="diff-table">';
+      html += '<thead><tr><th>PO Part & Description</th><th style="text-align:right;">Ext Price</th><th style="text-align:center;">Match</th><th>Matched CPQ SKU</th><th style="text-align:right;">CPQ Total</th></tr></thead><tbody>';
+      o.lines.forEach(function(l) {
+        var isDiff = l.match === "no";
+        html += '<tr class="' + (isDiff ? "has-variance" : "") + '">';
+        html += '<td><code>' + escapeHtml(l.poSku) + '</code><br><span style="font-size:11.5px;color:var(--text-muted);">' + escapeHtml(l.desc) + ' (Qty: ' + l.qty + ')</span></td>';
+        html += '<td style="text-align:right;font-family:monospace;font-weight:700;">' + fmtMoney(l.total) + '</td>';
+        html += '<td style="text-align:center;font-weight:700;">' + (l.match === "yes" || l.match === "amount" ? '<span style="color:var(--status-success)">✓</span>' : '<span style="color:var(--status-danger)">≠</span>') + '</td>';
+        html += '<td><code>' + escapeHtml(l.sfSku) + '</code></td>';
+        html += '<td style="text-align:right;font-family:monospace;font-weight:700;">' + fmtMoney(l.sfTotal) + '</td>';
+        html += '</tr>';
+      });
+      html += '</tbody></table></div>';
+    }
+
+    // TAB B: 38-Rule Checklist
+    if (activeTab === "checklist") {
+      html += '<div style="display:flex;flex-direction:column;">';
+      o.checklist.forEach(function(c) {
+        var badge = '<div class="check-badge-icon check-pass">✓</div>';
+        if (c[0] === "warn") badge = '<div class="check-badge-icon check-warn">!</div>';
+        else if (c[0] === "fail") badge = '<div class="check-badge-icon check-fail">✕</div>';
+        else if (c[0] === "info" || c[0] === "na") badge = '<div class="check-badge-icon check-info">–</div>';
+
+        html += '<div class="check-item-row">';
+        html += badge;
+        html += '<div>';
+        html += '<div style="font-weight:700;color:var(--text-heading);font-size:13px;">' + escapeHtml(c[1]) + '</div>';
+        html += '<div style="font-size:12px;color:var(--text-muted);margin-top:2px;">' + escapeHtml(c[2]) + '</div>';
+        html += '</div></div>';
       });
       html += '</div>';
+    }
 
-      // Toggle Payload
-      html += '<div style="margin-top:14px;border-top:1px solid var(--slds-border-subtle);padding-top:10px;">';
-      html += '<button type="button" class="btn-secondary" style="font-size:11.5px;padding:4px 8px;" id="toggleJsonBtn">Inspect Raw JSON Payload (SFDC API)</button>';
-      html += '<pre class="json-box" id="jsonPayloadArea" style="display:none;">' + esc(JSON.stringify({
+    html += '</div></div></div>'; // End Left Stage
+
+    // RIGHT RAIL (30%): Salesforce Booking Form Draft & RO Notes
+    html += '<div>';
+    if (o.booking) {
+      html += '<div class="content-card" style="margin-bottom:20px;">';
+      html += '<div style="padding:14px 20px;background:#F8FAFC;border-bottom:1px solid var(--border-light);display:flex;justify-content:space-between;align-items:center;">';
+      html += '<strong style="font-size:13.5px;color:var(--text-heading);">📝 Draft Salesforce Booking Form</strong>';
+      html += '<span style="font-size:11px;color:var(--text-muted);font-family:monospace;">Booking_Form__c</span>';
+      html += '</div>';
+
+      html += '<div style="padding:20px;">';
+      html += '<div class="form-input-group"><label>Booking Form Name</label><input type="text" class="modern-input" value="BF-AUTO-' + escapeHtml(o.po) + '" readonly></div>';
+      html += '<div class="form-input-group"><label>Salesforce Opportunity</label><input type="text" class="modern-input" value="' + escapeHtml(o.booking.opportunity) + '" readonly></div>';
+      html += '<div class="form-input-group"><label>Booked Net Amount (USD)</label><input type="number" step="0.01" class="modern-input" value="' + escapeHtml(o.booking.amount) + '" id="editAmountInput"></div>';
+      html += '<div class="form-input-group"><label>Sales Order Type</label><input type="text" class="modern-input" value="' + escapeHtml(o.booking.orderType) + '" id="editOrderTypeInput"></div>';
+      html += '<div class="form-input-group"><label>Reseller Partner</label><input type="text" class="modern-input" value="' + escapeHtml(o.booking.reseller) + '" id="editResellerInput"></div>';
+
+      (o.notes || []).forEach(function(n, idx) {
+        html += '<div class="form-input-group"><label>' + escapeHtml(n.title) + '</label><textarea class="modern-input" id="editNoteArea_' + idx + '">' + escapeHtml(n.body) + '</textarea></div>';
+      });
+
+      // API Inspector Toggle
+      html += '<div style="margin-top:16px;border-top:1px solid var(--border-light);padding-top:12px;">';
+      html += '<button type="button" class="btn-action-outline" style="width:100%;font-size:12px;justify-content:center;" id="toggleJsonViewerBtn">Inspect Live SFDC API Payload</button>';
+      html += '<pre class="code-inspector-box" id="jsonViewerArea" style="display:none;margin-top:12px;">' + escapeHtml(JSON.stringify({
         Name: "BF-AUTO-" + o.po,
         Opportunity__c: o.booking.opportunity,
         PO__c: o.po,
@@ -1500,196 +1572,244 @@ textarea.form-control {
       html += '</div></div>';
     }
 
-    html += '</div>'; // End Right Col
-    html += '</div>'; // End Split Content
+    // Ingest Audit Trail
+    html += '<div class="content-card">';
+    html += '<div style="padding:14px 20px;background:#F8FAFC;border-bottom:1px solid var(--border-light);">';
+    html += '<strong style="font-size:13px;color:var(--text-heading);">⏱️ Processing Pipeline Audit</strong>';
+    html += '</div>';
+    html += '<div style="padding:16px 20px;font-size:12px;color:var(--text-muted);">';
+    html += '<div style="margin-bottom:8px;">• <strong>' + escapeHtml(o.received) + '</strong>: Email attachment received in SOS inbox via PowerAutomate.</div>';
+    html += '<div style="margin-bottom:8px;">• <strong>' + escapeHtml(o.received) + '</strong>: Generic PDF parser extracted ' + o.lines.length + ' lines with 100% confidence.</div>';
+    html += '<div style="margin-bottom:8px;">• <strong>' + escapeHtml(o.received) + '</strong>: Cross-referenced CPQ quote in Snowflake RAW replicas.</div>';
+    html += '<div>• <strong>' + escapeHtml(o.received) + '</strong>: Evaluated 38 SOS policy checklist rules.</div>';
+    html += '</div></div>';
+
+    html += '</div>'; // End Right Rail
+    html += '</div>'; // End Split Grid
     html += '</div>';
     return html;
   }
 
-  /* ---------------------------------------------------- CONTROLLER / ROUTER */
-  function render() {
+  /* ---------------------------------------------------------------- CONTROLLER */
+  function updateApp() {
     var root = document.getElementById("appRoot");
-    if (state.view.type === "detail") {
-      var o = getOrder(state.view.id);
-      if (!o) { state.view = { type: "queue" }; return render(); }
+    if (appState.view.type === "detail") {
+      var o = getOrderById(appState.view.id);
+      if (!o) { appState.view = { type: "queue" }; return updateApp(); }
       root.innerHTML = renderDetailView(o);
     } else {
       root.innerHTML = renderQueueView();
     }
-    persistState();
+    saveState();
   }
 
-  /* Event Listeners */
+  /* ---------------------------------------------------------------- EVENTS */
   document.addEventListener("click", function(e) {
-    var row = e.target.closest("[data-open]");
-    if (row) {
-      var id = row.getAttribute("data-open");
-      state.view = { type: "detail", id: id };
-      render();
+    // Open Order Detail
+    var openBtn = e.target.closest("[data-open-order]");
+    if (openBtn) {
+      var id = openBtn.getAttribute("data-open-order");
+      appState.view = { type: "detail", id: id };
+      updateApp();
       window.scrollTo(0, 0);
       return;
     }
 
-    var back = e.target.closest("[data-back]");
-    if (back) {
-      state.view = { type: "queue" };
-      render();
+    // Back to Queue
+    var backBtn = e.target.closest("#backToQueueBtn, #navHomeBtn, #navQueueBtn");
+    if (backBtn) {
+      appState.view = { type: "queue" };
+      updateApp();
       window.scrollTo(0, 0);
       return;
     }
 
-    var tab = e.target.closest("[data-tab]");
-    if (tab) {
-      state.activeTab = tab.getAttribute("data-tab");
-      render();
+    // Segmented Queue Tab
+    var segTab = e.target.closest("[data-seg-tab]");
+    if (segTab) {
+      appState.activeTab = segTab.getAttribute("data-seg-tab");
+      updateApp();
       return;
     }
 
-    var ack = e.target.closest("[data-ack-flag]");
-    if (ack) {
-      var fid = ack.getAttribute("data-ack-flag");
-      var o = getOrder(state.view.id);
+    // Detail Sub-Tab (Reconcile vs Checklist)
+    var detailTab = e.target.closest("[data-detail-tab]");
+    if (detailTab) {
+      var o = getOrderById(appState.view.id);
       if (o) {
-        if (!o.reviewedFlags) o.reviewedFlags = [];
-        o.reviewedFlags.push(fid);
-        render();
+        o.detailTab = detailTab.getAttribute("data-detail-tab");
+        updateApp();
       }
       return;
     }
 
+    // Acknowledge Flag
+    var ack = e.target.closest("[data-ack-flag]");
+    if (ack) {
+      var fid = ack.getAttribute("data-ack-flag");
+      var o = getOrderById(appState.view.id);
+      if (o) {
+        if (!o.reviewedFlags) o.reviewedFlags = [];
+        o.reviewedFlags.push(fid);
+        updateApp();
+      }
+      return;
+    }
+
+    // Undo Flag
     var undo = e.target.closest("[data-undo-flag]");
     if (undo) {
       e.preventDefault();
       var fid = undo.getAttribute("data-undo-flag");
-      var o = getOrder(state.view.id);
+      var o = getOrderById(appState.view.id);
       if (o && o.reviewedFlags) {
         o.reviewedFlags = o.reviewedFlags.filter(function(x){ return x !== fid; });
-        render();
+        updateApp();
       }
       return;
     }
 
-    var toggleJson = e.target.closest("#toggleJsonBtn");
+    // Toggle JSON Area
+    var toggleJson = e.target.closest("#toggleJsonViewerBtn");
     if (toggleJson) {
-      var p = document.getElementById("jsonPayloadArea");
-      if (p) p.style.display = p.style.display === "none" ? "block" : "none";
+      var box = document.getElementById("jsonViewerArea");
+      if (box) box.style.display = box.style.display === "none" ? "block" : "none";
       return;
     }
 
-    var approveBtn = e.target.closest('[data-action="approve"]');
-    if (approveBtn && !approveBtn.disabled) {
-      openApproveModal(getOrder(state.view.id));
+    // Trigger Approve Modal
+    var approve = e.target.closest('[data-action="approve"]');
+    if (approve && !approve.disabled) {
+      triggerApproveModal(getOrderById(appState.view.id));
       return;
     }
 
-    var returnBtn = e.target.closest('[data-action="return"]');
-    if (returnBtn) {
-      openReturnModal(getOrder(state.view.id));
+    // Trigger Return Modal
+    var returnAction = e.target.closest('[data-action="return"]');
+    if (returnAction) {
+      triggerReturnModal(getOrderById(appState.view.id));
+      return;
+    }
+
+    // Refresh Sync
+    var ref = e.target.closest("#refreshStreamBtn");
+    if (ref) {
+      notifyToast("🔄 Inbound stream refreshed from Azure Blob container.");
       return;
     }
   });
 
-  /* Modal Handlers */
-  function openApproveModal(o) {
-    var modalRoot = document.getElementById("modalContainer");
-    var html = '<div class="modal-overlay" id="modalBackdrop">';
-    html += '<div class="slds-modal-box">';
-    html += '<div class="modal-top-bar">';
+  // Global Search Input
+  document.getElementById("globalSearchInput").addEventListener("input", function(e) {
+    appState.searchQuery = e.target.value;
+    if (appState.view.type !== "queue") appState.view = { type: "queue" };
+    updateApp();
+  });
+
+  // Reset Demo
+  document.getElementById("resetDemoBtn").addEventListener("click", function() {
+    localStorage.removeItem(STORAGE_KEY);
+    appState = loadState();
+    updateApp();
+    notifyToast("🔄 Demo reset to initial pristine state.");
+  });
+
+  /* ---------------------------------------------------------------- MODALS */
+  function triggerApproveModal(o) {
+    var modalHost = document.getElementById("modalHost");
+    var html = '<div class="modal-backdrop-blur">';
+    html += '<div class="modern-modal-card">';
+    html += '<div class="modal-header-bar">';
     html += '<h3>⚡ Confirm 1-Click Salesforce Booking</h3>';
-    html += '<button type="button" class="modal-close-btn" id="closeModalBtn">&times;</button>';
+    html += '<button type="button" class="btn-close-modal" id="closeModalBtn">&times;</button>';
     html += '</div>';
-    html += '<div class="modal-content-area">';
-    html += '<p style="margin-top:0;">You are approving <strong>PO #' + esc(o.po) + '</strong> (' + esc(o.from) + '). This will generate an active draft <code>Booking_Form__c</code> record linked to Opportunity <code>' + esc(o.opportunity) + '</code> in Salesforce poclab sandbox.</p>';
-    html += '<div style="background:#F8FAFD;padding:12px;border-radius:6px;border:1px solid var(--slds-border);margin-bottom:14px;">';
-    html += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;font-size:12.5px;">';
-    html += '<div>Booked Net Amount: <strong>' + fmtUSD(o.booking.amount) + '</strong></div>';
-    html += '<div>Stage: <strong>In Process by SOS</strong></div>';
-    html += '<div>Reseller: <strong>' + esc(o.booking.reseller) + '</strong></div>';
-    html += '<div>RO Notes Attached: <strong>' + (o.notes ? o.notes.length : 0) + '</strong></div>';
-    html += '</div></div>';
-    html += '<div class="form-group">';
-    html += '<label>Approver Signature</label>';
-    html += '<input type="text" class="form-control" id="approverName" value="Amy Higgins" placeholder="Your Full Name">';
-    html += '</div>';
-    html += '<div class="form-group" style="margin-top:10px;">';
-    html += '<label>Optional Reviewer Note to RO</label>';
-    html += '<textarea class="form-control" id="approverNote" placeholder="e.g. All pricing reconciles; FOB terms approved per SOS exception list."></textarea>';
-    html += '</div>';
-    html += '</div>';
-    html += '<div class="modal-bottom-actions">';
-    html += '<button type="button" class="btn-secondary" id="cancelModalBtn">Cancel</button>';
-    html += '<button type="button" class="btn-primary" id="confirmApproveBtn">Create Booking Form in SFDC</button>';
-    html += '</div>';
+
+    html += '<div class="modal-body-pad">';
+    html += '<p style="margin-top:0;">You are generating an active <code>Booking_Form__c</code> record in Salesforce <strong>poclab sandbox</strong> linked to Opportunity <code>' + escapeHtml(o.opportunity) + '</code>.</p>';
+    html += '<div style="background:#F8FAFC;border:1px solid var(--border-light);border-radius:var(--radius-md);padding:14px;margin-bottom:16px;">';
+    html += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;font-size:13px;">';
+    html += '<div>PO Identifier: <strong>' + escapeHtml(o.po) + '</strong></div>';
+    html += '<div>Net Booked Total: <strong>' + fmtMoney(o.booking.amount) + '</strong></div>';
+    html += '<div>Reseller Partner: <strong>' + escapeHtml(o.booking.reseller) + '</strong></div>';
+    html += '<div>Target Stage: <strong>In Process by SOS</strong></div>';
     html += '</div></div>';
 
-    modalRoot.innerHTML = html;
+    html += '<div class="form-input-group">';
+    html += '<label>SOS Approver Signature</label>';
+    html += '<input type="text" class="modern-input" id="approverNameField" value="Amy Higgins">';
+    html += '</div>';
+    html += '<div class="form-input-group">';
+    html += '<label>Reviewer Audit Note (Optional)</label>';
+    html += '<textarea class="modern-input" id="approverAuditNote" placeholder="e.g. All pricing verified against CPQ quote; FOB shipping acknowledged per SOS exception policy."></textarea>';
+    html += '</div></div>';
+
+    html += '<div class="modal-footer-bar">';
+    html += '<button type="button" class="btn-action-outline" id="cancelModalBtn">Cancel</button>';
+    html += '<button type="button" class="btn-action-primary" id="confirmApproveBtn">Create Booking Form in SFDC</button>';
+    html += '</div></div></div>';
+
+    modalHost.innerHTML = html;
 
     document.getElementById("closeModalBtn").onclick = closeModal;
     document.getElementById("cancelModalBtn").onclick = closeModal;
     document.getElementById("confirmApproveBtn").onclick = function() {
       o.status = "booked";
       closeModal();
-      render();
-      showToast("✅ Successfully created Booking Form BF-AUTO-" + o.po + " in Salesforce!");
+      updateApp();
+      notifyToast("✅ Successfully created Booking Form BF-AUTO-" + o.po + " in Salesforce!");
     };
   }
 
-  function openReturnModal(o) {
-    var modalRoot = document.getElementById("modalContainer");
-    var emailBody = "Hello " + o.from + " Order Operations,\n\nThank you for Purchase Order " + o.po + ".\n\nBefore our Sales Operations team can proceed with booking this order, please provide clarification on the following items:\n\n";
+  function triggerReturnModal(o) {
+    var modalHost = document.getElementById("modalHost");
+    var emailBody = "Hello " + o.from + " Order Operations,\n\nThank you for Purchase Order " + o.po + ".\n\nBefore F5 Sales Operations can proceed with booking this order, please provide clarification on the following items:\n\n";
     (o.flags || []).forEach(function(f) {
-      emailBody += "  • " + f.title + "\n";
+      emailBody += "  • " + f.title + ": " + f.detail + "\n";
     });
-    emailBody += "\nPlease reply with the updated details or submit a revised purchase order.\n\nThank you,\nF5 Sales Operations Desk";
+    emailBody += "\nPlease reply with the updated information or submit a revised purchase order.\n\nThank you,\nF5 Sales Operations Desk";
 
-    var html = '<div class="modal-overlay" id="modalBackdrop">';
-    html += '<div class="slds-modal-box" style="max-width:680px;">';
-    html += '<div class="modal-top-bar" style="background:var(--f5-red);">';
+    var html = '<div class="modal-backdrop-blur">';
+    html += '<div class="modern-modal-card" style="max-width:700px;">';
+    html += '<div class="modal-header-bar" style="background:var(--f5-red-500);">';
     html += '<h3>✉️ Return to Reseller — Discrepancy Notice</h3>';
-    html += '<button type="button" class="modal-close-btn" id="closeModalBtn">&times;</button>';
+    html += '<button type="button" class="btn-close-modal" id="closeModalBtn">&times;</button>';
     html += '</div>';
-    html += '<div class="modal-content-area">';
-    html += '<div style="margin-bottom:10px;font-size:12.5px;color:var(--text-muted);">';
-    html += '<strong>To:</strong> <code>' + esc(o.from) + ' Order Desk</code> &bull; <strong>Subject:</strong> <code>Inquiry Regarding F5 Purchase Order #' + esc(o.po) + '</code>';
-    html += '</div>';
-    html += '<textarea class="form-control" id="emailBodyText" style="min-height:220px;font-family:monospace;font-size:12px;">' + esc(emailBody) + '</textarea>';
-    html += '</div>';
-    html += '<div class="modal-bottom-actions">';
-    html += '<button type="button" class="btn-secondary" id="cancelModalBtn">Cancel</button>';
-    html += '<button type="button" class="btn-secondary" id="copyEmailBtn">📋 Copy Email to Clipboard</button>';
-    html += '<button type="button" class="btn-primary" id="confirmReturnBtn">Mark as Returned to Reseller</button>';
-    html += '</div>';
-    html += '</div></div>';
 
-    modalRoot.innerHTML = html;
+    html += '<div class="modal-body-pad">';
+    html += '<div style="margin-bottom:12px;font-size:12.5px;color:var(--text-muted);">';
+    html += '<strong>To:</strong> <code>' + escapeHtml(o.from) + ' Order Desk</code> &bull; <strong>Subject:</strong> <code>Inquiry Regarding F5 Purchase Order #' + escapeHtml(o.po) + '</code>';
+    html += '</div>';
+    html += '<textarea class="modern-input" id="emailDraftArea" style="min-height:240px;font-family:monospace;font-size:12px;">' + escapeHtml(emailBody) + '</textarea>';
+    html += '</div>';
+
+    html += '<div class="modal-footer-bar">';
+    html += '<button type="button" class="btn-action-outline" id="cancelModalBtn">Cancel</button>';
+    html += '<button type="button" class="btn-action-outline" id="copyEmailClipboardBtn">📋 Copy to Clipboard</button>';
+    html += '<button type="button" class="btn-action-primary" id="confirmReturnSubmitBtn" style="background:var(--f5-red-500);">Mark as Returned to Reseller</button>';
+    html += '</div></div></div>';
+
+    modalHost.innerHTML = html;
 
     document.getElementById("closeModalBtn").onclick = closeModal;
     document.getElementById("cancelModalBtn").onclick = closeModal;
-    document.getElementById("copyEmailBtn").onclick = function() {
-      var txt = document.getElementById("emailBodyText").value;
-      navigator.clipboard.writeText(txt);
-      showToast("📋 Copied email notice to clipboard!");
+    document.getElementById("copyEmailClipboardBtn").onclick = function() {
+      var text = document.getElementById("emailDraftArea").value;
+      navigator.clipboard.writeText(text);
+      notifyToast("📋 Copied email notice to clipboard!");
     };
-    document.getElementById("confirmReturnBtn").onclick = function() {
+    document.getElementById("confirmReturnSubmitBtn").onclick = function() {
       o.status = "return";
       closeModal();
-      render();
-      showToast("✉️ PO #" + o.po + " marked as Returned to Reseller.");
+      updateApp();
+      notifyToast("✉️ PO #" + o.po + " marked as Returned to Reseller.");
     };
   }
 
   function closeModal() {
-    document.getElementById("modalContainer").innerHTML = "";
+    document.getElementById("modalHost").innerHTML = "";
   }
 
-  document.getElementById("resetBtn").onclick = function() {
-    localStorage.removeItem(STORAGE_KEY);
-    state = getSavedState();
-    render();
-    showToast("🔄 Demo reset to initial state.");
-  };
-
-  render();
+  updateApp();
 })();
 </script>
 </body>
