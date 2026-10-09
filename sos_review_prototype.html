@@ -1942,7 +1942,7 @@ textarea.modern-input {
 
       fetch("/api/book/" + encodeURIComponent(o.id), {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", "X-SOS-Portal": "1" },
         body: JSON.stringify({ approver: approverName, note: auditNote })
       })
       .then(function(r) { return r.json(); })
@@ -1957,26 +1957,16 @@ textarea.modern-input {
           updateApp();
           showBookingSuccessModal(o, resp);
         } else {
-          alert("Salesforce commit notice: " + ((resp && (resp.error || resp.details)) || "Could not complete write"));
+          var errDetail = (resp && (resp.error || resp.details)) || "Salesforce returned an error.";
+          alert("Salesforce Booking Refused:\n\n" + (typeof errDetail === 'object' ? JSON.stringify(errDetail, null, 2) : errDetail));
           btn.disabled = false;
-          btn.innerText = "Create Booking Form in SFDC";
+          btn.innerText = "Approve & Book to Salesforce";
         }
       })
       .catch(function(err) {
-        // Fallback simulation if running standalone file
-        o.status = "booked";
-        o.sfdcRecordId = "a1sPOCLAB_MOCK_" + o.po;
-        o.sfdcRecordUrl = "https://f5--poclab.sandbox.my.salesforce.com/lightning/r/Booking_Form__c/" + o.sfdcRecordId + "/view";
-        o.pdfAttached = true;
-        saveState();
-        updateApp();
-        showBookingSuccessModal(o, {
-          success: true,
-          booking_form_id: o.sfdcRecordId,
-          url: o.sfdcRecordUrl,
-          pdf_attached: true,
-          dry_run: true
-        });
+        alert("Salesforce Booking Network Error:\n\nCould not reach the local validation service (" + (err && err.message || err) + ").\nPlease verify the server is running.");
+        btn.disabled = false;
+        btn.innerText = "Approve & Book to Salesforce";
       });
     };
   }
@@ -2040,7 +2030,7 @@ textarea.modern-input {
     html += '</div>';
 
     html += '<div class="modal-body-pad">';
-    html += '<p style="margin-top:0;font-size:13px;color:var(--text-muted);">Demonstrate real-time PO ingestion and live pipeline validation directly to Executive Leadership.</p>';
+    html += '<p style="margin-top:0;font-size:13px;color:var(--text-muted);">Real-time Purchase Order ingestion via automated Azure Blob polling or direct PDF upload for instant SOS extraction and CPQ validation.</p>';
 
     html += '<div style="background:#F0FDF4;border:1px solid #BBF7D0;border-radius:var(--radius-md);padding:12px 16px;margin-bottom:18px;display:flex;align-items:center;justify-content:space-between;">';
     html += '<div><span class="pulse-dot" style="background:#16A34A;"></span> <strong>Azure Blob Storage Watcher:</strong> Active (polling <code>purchaseorders</code>)</div>';
@@ -2055,7 +2045,7 @@ textarea.modern-input {
     html += '</div>';
 
     html += '<div style="margin-top:20px;padding-top:16px;border-top:1px solid var(--border-light);">';
-    html += '<div style="font-size:12px;font-weight:700;color:var(--text-muted);text-transform:uppercase;margin-bottom:8px;">1-Click Colleague Email Ingestion Simulation:</div>';
+    html += '<div style="font-size:12px;font-weight:700;color:var(--text-muted);text-transform:uppercase;margin-bottom:8px;">Quick Ingest Test Sample:</div>';
     html += '<div style="display:flex;gap:10px;">';
     html += '<button type="button" class="btn-action-outline" id="simulateSamplePoBtn" style="flex:1;justify-content:center;">📥 Ingest Real PO: 4501706557 (NTT America / F5Q-01007707)</button>';
     html += '</div>';
@@ -2096,7 +2086,7 @@ textarea.modern-input {
       notifyToast("🚀 Simulating colleague sending PO 4501706557 via email...");
       fetch("/api/upload", {
         method: "POST",
-        headers: { "X-Filename": "4501706557 1 1 2.pdf", "Content-Type": "application/pdf" },
+        headers: { "X-Filename": "4501706557 1 1 2.pdf", "Content-Type": "application/pdf", "X-SOS-Portal": "1" },
         body: "%PDF-1.4 sample payload"
       })
       .then(function(r) { return r.json(); })
@@ -2120,7 +2110,7 @@ textarea.modern-input {
         var rawData = evt.target.result;
         fetch("/api/upload", {
           method: "POST",
-          headers: { "X-Filename": file.name, "Content-Type": "application/pdf" },
+          headers: { "X-Filename": file.name, "Content-Type": "application/pdf", "X-SOS-Portal": "1" },
           body: rawData
         })
         .then(function(r) { return r.json(); })

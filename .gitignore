@@ -36,3 +36,7 @@ my_quotes.json
 *.jsonl
 scratch/
 
+# Live portal: incoming POs, demo queue, and test fixtures
+inbound_pos/
+demo_queue/*.pdf
+tests/fixtures/

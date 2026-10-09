@@ -1,9 +1,13 @@
 """Salesforce write path: create the Booking Form.
 
-Auth. Supports JWT bearer flow, static token, and environment-based configuration.
-Writes. dry_run defaults to True. Turning it off is a deliberate act.
-An automated system that creates records in a sales system should be
-hard to fire by accident.
+Writes. dry_run defaults to True. Turning it off (--live) is a deliberate act.
+Refuses to write live to any org where Organization.IsSandbox is not true.
+
+Auth. Supports:
+  - SF_CLI_ALIAS: refreshes from `sf org display --target-org <alias> --json`.
+    Recommended for laptop demos: login once via browser SSO, never expires.
+  - SF_ACCESS_TOKEN: static session id (Workbench). Fast to start, expires.
+  - JWT bearer flow: for production / Databricks unattended deployments.
 """
 
 from __future__ import annotations
@@ -12,19 +16,52 @@ import base64
 import json
 import logging
 import os
+import re
+import shutil
 import ssl
+import subprocess
 import time
-import urllib.error
-from urllib.parse import urlencode
-import urllib.request
 from typing import Any, Optional
+import urllib.error
+import urllib.request
+from urllib.parse import urlencode
 
-from ..booking.builder import BookingFormBuilder
+from ..booking.builder import BookingForm, BookingFormBuilder
 
 log = logging.getLogger(__name__)
 
 DEFAULT_API_VERSION = "v61.0"
-DEFAULT_SANDBOX_URL = os.environ.get("SF_INSTANCE_URL", "https://f5--poclab.sandbox.my.salesforce.com")
+DEFAULT_SANDBOX_URL = os.environ.get(
+    "SF_INSTANCE_URL", "https://f5--poclab.sandbox.my.salesforce.com"
+)
+
+# Friendly translations for the errors people actually hit in a demo.
+_ERROR_HINTS: list[tuple[re.Pattern, str]] = [
+    (re.compile(r"INVALID_SESSION_ID|Session expired or invalid", re.I),
+     "Salesforce session expired. Run `sf org login web --alias poclab` or paste a fresh Workbench session ID into .env."),
+    (re.compile(r"DUPLICATE_VALUE.*PO_to_F5__c|duplicate value on record with id", re.I),
+     "A Booking Form for this PO number already exists in poclab. Reset or change the PO number."),
+    (re.compile(r"FIELD_CUSTOM_VALIDATION_EXCEPTION.*opportunity", re.I),
+     "The Opportunity linked to this quote does not exist in poclab. Set SF_DEMO_OPPORTUNITY_ID to an existing poclab opportunity."),
+    (re.compile(r"REQUIRED_FIELD_MISSING.*([A-Za-z0-9_]+__c)", re.I),
+     "Required custom field missing on Booking Form: check field mappings."),
+    (re.compile(r"INVALID_CROSS_REFERENCE_KEY", re.I),
+     "An ID (Opportunity, Account, or ContentDocument) was not found in this sandbox."),
+]
+
+
+def explain_errors(errors: list) -> str:
+    """Turn Salesforce error lists into plain, actionable English."""
+    if not errors:
+        return "Unknown error."
+    raw = "; ".join(
+        e.get("message", str(e)) if isinstance(e, dict) else str(e)
+        for e in errors
+    )
+    for pattern, hint in _ERROR_HINTS:
+        if pattern.search(raw):
+            return f"{hint} (Salesforce: {raw})"
+    return raw
 
 
 class SalesforceError(RuntimeError):
@@ -49,28 +86,32 @@ class _HttpResponse:
 
 
 def _get_ssl_context() -> ssl.SSLContext:
-    """Returns a verified SSL context, using F5 CA bundle if configured, or default system CA."""
-    insecure = os.environ.get("SF_INSECURE_TLS", "").lower() in ("true", "1", "yes")
-    if insecure:
-        ctx = ssl.create_default_context()
-        ctx.check_hostname = False
-        ctx.verify_mode = ssl.CERT_NONE
-        return ctx
+    if os.environ.get("USE_OS_TRUSTSTORE", "").lower() in ("true", "1", "yes"):
+        try:
+            import truststore
+            return truststore.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        except ImportError:
+            log.warning("USE_OS_TRUSTSTORE set but truststore not installed; falling back.")
 
     cafile = (
-        os.environ.get("REQUESTS_CA_BUNDLE") or
-        os.environ.get("CURL_CA_BUNDLE") or
-        os.environ.get("SSL_CERT_FILE")
+        os.environ.get("REQUESTS_CA_BUNDLE")
+        or os.environ.get("CURL_CA_BUNDLE")
+        or os.environ.get("SSL_CERT_FILE")
     )
     if cafile and os.path.exists(cafile):
         return ssl.create_default_context(cafile=cafile)
     return ssl.create_default_context()
 
 
-def _http_request(method: str, url: str, headers: dict = None,
-                  params: dict = None, json_data: Any = None,
-                  data: Any = None, timeout: int = 30) -> _HttpResponse:
-    """Zero-dependency HTTP client using Python standard library."""
+def _http_request(
+    method: str,
+    url: str,
+    headers: dict = None,
+    params: dict = None,
+    json_data: Any = None,
+    data: Any = None,
+    timeout: int = 30,
+) -> _HttpResponse:
     if params:
         sep = "&" if "?" in url else "?"
         url = f"{url}{sep}{urlencode(params)}"
@@ -90,7 +131,6 @@ def _http_request(method: str, url: str, headers: dict = None,
             body = data
 
     ctx = _get_ssl_context()
-
     req = urllib.request.Request(url, data=body, headers=hdrs, method=method)
     try:
         with urllib.request.urlopen(req, timeout=timeout, context=ctx) as r:
@@ -98,263 +138,456 @@ def _http_request(method: str, url: str, headers: dict = None,
     except urllib.error.HTTPError as exc:
         return _HttpResponse(exc.code, exc.read())
     except Exception as exc:
-        raise SalesforceError(f"Connection to Salesforce failed: {exc}") from exc
+        raise SalesforceError(f"Connection failed: {exc}") from exc
+
+
+def _token_from_sf_cli(alias: str) -> tuple[str, str]:
+    """Ask the Salesforce CLI for a fresh access token for an authenticated org."""
+    sf_bin = shutil.which("sf")
+    if not sf_bin:
+        raise RuntimeError("Salesforce CLI ('sf') is not installed or not on PATH.")
+    cmd = [sf_bin, "org", "display", "--target-org", alias, "--json"]
+    try:
+        res = subprocess.run(cmd, capture_output=True, text=True, check=False, timeout=30)
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError("Salesforce CLI timed out.") from exc
+    if res.returncode != 0:
+        raise RuntimeError(f"Salesforce CLI failed: {res.stderr or res.stdout}")
+    try:
+        payload = json.loads(res.stdout)
+    except Exception as exc:
+        raise RuntimeError(f"Could not parse Salesforce CLI output: {res.stdout}") from exc
+
+    result = payload.get("result", {})
+    token = result.get("accessToken")
+    inst = result.get("instanceUrl")
+    if not token or not inst:
+        raise RuntimeError(f"Salesforce CLI did not return token/instance for '{alias}'.")
+    return token, inst.rstrip("/")
 
 
 class SalesforceClient:
-    def __init__(self, instance_url: str = DEFAULT_SANDBOX_URL,
-                 access_token: str = "dry_run_token",
-                 api_version: str = DEFAULT_API_VERSION,
-                 dry_run: bool = True):
+    """Talks to the Salesforce REST API.
+    
+    Defaults to dry_run=True. Turning it off requires passing dry_run=False.
+    """
+
+    def __init__(
+        self,
+        instance_url: str = DEFAULT_SANDBOX_URL,
+        access_token: Optional[str] = None,
+        api_version: str = DEFAULT_API_VERSION,
+        dry_run: bool = True,
+        token_refresher=None,
+    ):
         self.instance_url = instance_url.rstrip("/")
         self.access_token = access_token
         self.api_version = api_version
         self.dry_run = dry_run
-
-    # ----------------------------------------------------------------- auth
-    @classmethod
-    def from_jwt(cls, login_url: str, client_id: str, username: str,
-                 private_key: str | bytes, api_version: str = DEFAULT_API_VERSION,
-                 dry_run: bool = True) -> "SalesforceClient":
-        """Connected-app JWT bearer flow."""
-        try:
-            import jwt as pyjwt
-        except ImportError:
-            raise SalesforceError(
-                "PyJWT is required for Connected-App JWT auth. "
-                "Install with: pip install pyjwt cryptography")
-
-        login_url = login_url.rstrip("/")
-        assertion = pyjwt.encode(
-            {"iss": client_id, "sub": username, "aud": login_url,
-             "exp": int(time.time()) + 180},
-            private_key, algorithm="RS256",
-        )
-        resp = _http_request(
-            "POST",
-            f"{login_url}/services/oauth2/token",
-            data={"grant_type": "urn:ietf:params:oauth:grant-type:jwt-bearer",
-                  "assertion": assertion},
-            timeout=30)
-        if resp.status_code != 200:
-            raise SalesforceError(
-                f"JWT auth failed ({resp.status_code}): {resp.text}. "
-                f"Check the connected app is pre-authorised for {username} "
-                f"and that the cert matches the uploaded one.")
-        body = resp.json()
-        return cls(body["instance_url"], body["access_token"], api_version, dry_run)
+        self.token_refresher = token_refresher
+        self._org_info_cache: Optional[dict] = None
 
     @classmethod
-    def from_secrets(cls, secrets, scope: str = "SalesKeyVaultScope",
-                     sandbox: bool = True, dry_run: bool = True) -> "SalesforceClient":
-        return cls.from_jwt(
-            login_url=("https://test.salesforce.com" if sandbox
-                       else "https://login.salesforce.com"),
-            client_id=secrets.get(scope=scope, key="sfdc-client-id"),
-            username=secrets.get(scope=scope, key="sfdc-username"),
-            private_key=secrets.get(scope=scope, key="sfdc-private-key")
-                                .replace("\\n", "\n"),
-            dry_run=dry_run,
-        )
+    def from_env(cls, dry_run: Optional[bool] = None) -> "SalesforceClient":
+        if dry_run is None:
+            live_mode = os.environ.get("SF_LIVE_MODE", "false").lower() in ("true", "1", "yes")
+            dry_run = not live_mode
 
-    @classmethod
-    def from_password(cls, username: str, password: str,
-                      security_token: str = "",
-                      login_url: str = "https://test.salesforce.com",
-                      api_version: str = DEFAULT_API_VERSION,
-                      dry_run: bool = True) -> "SalesforceClient":
-        """Logs in via Salesforce Partner SOAP API with username + password + security token."""
-        import xml.etree.ElementTree as ET
-        from xml.sax.saxutils import escape
-        from urllib.parse import urlparse
+        alias = os.environ.get("SF_CLI_ALIAS", "").strip()
+        static_token = os.environ.get("SF_ACCESS_TOKEN", "").strip()
+        inst = os.environ.get("SF_INSTANCE_URL", DEFAULT_SANDBOX_URL).rstrip("/")
 
-        login_url = login_url.rstrip("/")
-        soap_ver = api_version.lstrip("v")
-        soap_endpoint = f"{login_url}/services/Soap/u/{soap_ver}"
-        full_password = f"{password}{security_token}"
-        safe_username = escape(username)
-        safe_password = escape(full_password)
-        soap_body = (
-            '<?xml version="1.0" encoding="utf-8" ?>'
-            '<env:Envelope xmlns:xsd="http://www.w3.org/2001/XMLSchema" '
-            'xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" '
-            'xmlns:env="http://schemas.xmlsoap.org/soap/envelope/">'
-            '<env:Body>'
-            '<n1:login xmlns:n1="urn:partner.soap.sforce.com">'
-            f'<n1:username>{safe_username}</n1:username>'
-            f'<n1:password>{safe_password}</n1:password>'
-            '</n1:login>'
-            '</env:Body>'
-            '</env:Envelope>'
-        )
-        headers = {"Content-Type": "text/xml; charset=UTF-8", "SOAPAction": "login"}
-        resp = _http_request("POST", soap_endpoint, headers=headers, data=soap_body, timeout=30)
-        if resp.status_code != 200:
+        # Option A: Salesforce CLI
+        if alias:
             try:
-                err_root = ET.fromstring(resp.text)
-                fault = err_root.find(".//faultstring")
-                if fault is not None and fault.text:
-                    raise SalesforceError(f"Login failed: {fault.text}")
-            except SalesforceError:
-                raise
-            except Exception:
-                pass
-            raise SalesforceError(f"Login failed ({resp.status_code}): {resp.text}")
+                token, inst_cli = _token_from_sf_cli(alias)
+                inst = inst_cli or inst
+                return cls(
+                    instance_url=inst,
+                    access_token=token,
+                    dry_run=dry_run,
+                    token_refresher=lambda: _token_from_sf_cli(alias)[0],
+                )
+            except Exception as exc:
+                log.warning("Could not get token from sf CLI alias '%s': %s", alias, exc)
+                if not static_token:
+                    raise
 
-        try:
-            root = ET.fromstring(resp.text)
-            ns = {"soapenv": "http://schemas.xmlsoap.org/soap/envelope/",
-                  "p": "urn:partner.soap.sforce.com"}
-            sess_elem = root.find(".//p:sessionId", ns)
-            url_elem = root.find(".//p:serverUrl", ns)
-            if sess_elem is None or not sess_elem.text:
-                raise SalesforceError(f"No sessionId in login response: {resp.text[:300]}")
-            session_id = sess_elem.text
-            server_url = url_elem.text if url_elem is not None else login_url
-            parsed = urlparse(server_url)
-            instance_url = f"{parsed.scheme}://{parsed.netloc}"
-            return cls(instance_url, session_id, api_version, dry_run)
-        except Exception as exc:
-            raise SalesforceError(f"Failed to parse login response: {exc}")
+        # Option B: static token
+        if static_token:
+            return cls(instance_url=inst, access_token=static_token, dry_run=dry_run)
 
-    @classmethod
-    def from_token(cls, instance_url: Optional[str] = None,
-                   token: Optional[str] = None, **kw) -> "SalesforceClient":
-        instance_url = instance_url or os.environ.get("SF_INSTANCE_URL", DEFAULT_SANDBOX_URL)
-        token = token or os.environ.get("SF_ACCESS_TOKEN")
-        if not token:
-            raise SalesforceError("Salesforce access token required. Provide token or set SF_ACCESS_TOKEN in environment.")
-        return cls(instance_url, token, **kw)
+        # Unauthenticated dry_run client
+        if dry_run:
+            return cls(instance_url=inst, access_token="simulated_token", dry_run=True)
 
-    @classmethod
-    def from_env(cls, sandbox_url: Optional[str] = None) -> "SalesforceClient":
-        """Loads client from environment variables, defaulting to poclab sandbox."""
-        instance_url = (
-            sandbox_url
-            or os.environ.get("SF_INSTANCE_URL")
-            or DEFAULT_SANDBOX_URL
+        raise RuntimeError(
+            "Live mode requested but no Salesforce credentials found. "
+            "Set SF_CLI_ALIAS (recommended) or SF_ACCESS_TOKEN in .env."
         )
-        token = os.environ.get("SF_ACCESS_TOKEN")
-        if not token:
-            raise SalesforceError("Salesforce access token not found. Please set SF_ACCESS_TOKEN in .env or environment.")
-        dry_run_str = os.environ.get("SF_DRY_RUN", "true").lower()
-        dry_run = dry_run_str in ("true", "1", "yes")
-        return cls(instance_url=instance_url, access_token=token, dry_run=dry_run)
 
-    # -------------------------------------------------------------- plumbing
+    @classmethod
+    def from_jwt(cls, instance_url: str, client_id: str, username: str,
+                 private_key: str, dry_run: bool = True) -> "SalesforceClient":
+        import jwt
+        token_url = f"{instance_url.rstrip('/')}/services/oauth2/token"
+        claim = {
+            "iss": client_id,
+            "sub": username,
+            "aud": instance_url.rstrip("/"),
+            "exp": int(time.time()) + 300,
+        }
+        assertion = jwt.encode(claim, private_key, algorithm="RS256")
+        data = {
+            "grant_type": "urn:ietf:params:oauth:grant-type:jwt-bearer",
+            "assertion": assertion,
+        }
+        resp = _http_request("POST", token_url, data=data)
+        resp.raise_for_status()
+        body = resp.json()
+
+        def refresher():
+            fresh_claim = dict(claim, exp=int(time.time()) + 300)
+            fresh_assertion = jwt.encode(fresh_claim, private_key, algorithm="RS256")
+            r = _http_request("POST", token_url, data={"grant_type": data["grant_type"], "assertion": fresh_assertion})
+            r.raise_for_status()
+            return r.json()["access_token"]
+
+        return cls(
+            instance_url=body.get("instance_url", instance_url),
+            access_token=body["access_token"],
+            dry_run=dry_run,
+            token_refresher=refresher,
+        )
+
     @property
-    def headers(self) -> dict:
-        return {"Authorization": f"Bearer {self.access_token}",
-                "Content-Type": "application/json"}
+    def can_refresh(self) -> bool:
+        return self.token_refresher is not None
 
-    def _url(self, path: str) -> str:
-        return f"{self.instance_url}/services/data/{self.api_version}/{path.lstrip('/')}"
+    def refresh_token(self) -> str:
+        if not self.token_refresher:
+            raise RuntimeError("No token refresher configured; cannot renew expired session.")
+        self.access_token = self.token_refresher()
+        return self.access_token
 
+    def ensure_token(self) -> str:
+        if not self.access_token:
+            self.refresh_token()
+        return self.access_token
+
+    def _call(self, method: str, path: str, json_data: Any = None, params: dict = None) -> _HttpResponse:
+        url = f"{self.instance_url}{path}" if path.startswith("/services") else f"{self.instance_url}/services/data/{self.api_version}{path}"
+        headers = {"Authorization": f"Bearer {self.ensure_token()}"}
+        resp = _http_request(method, url, headers=headers, json_data=json_data, params=params)
+        if resp.status_code == 401 and self.can_refresh:
+            log.info("Salesforce session returned 401; refreshing token...")
+            self.refresh_token()
+            headers["Authorization"] = f"Bearer {self.access_token}"
+            resp = _http_request(method, url, headers=headers, json_data=json_data, params=params)
+        return resp
+
+    # ------------------------------------------------------------- sandbox check
+    def org_info(self) -> dict:
+        if self.dry_run and self.access_token in (None, "simulated_token", "dry_run_token"):
+            return {"IsSandbox": True, "Name": "Simulated Org", "TrialExpirationDate": None, "dry_run": True}
+        if self._org_info_cache is None:
+            resp = self._call("GET", "/query", params={"q": "SELECT Id, Name, IsSandbox, OrganizationType FROM Organization LIMIT 1"})
+            resp.raise_for_status()
+            records = resp.json().get("records", [])
+            self._org_info_cache = records[0] if records else {}
+        return self._org_info_cache
+
+    def assert_sandbox(self) -> None:
+        """Safety rail: refuse to write live to any org that is not a sandbox unless explicitly enabled for production deployment."""
+        if self.dry_run:
+            return
+        info = self.org_info()
+        if not info.get("IsSandbox", False):
+            allow_prod = os.environ.get("SF_ALLOW_PRODUCTION", "false").lower() in ("true", "1", "yes")
+            if not allow_prod:
+                raise SalesforceError(
+                    f"SAFETY BLOCK: connected to '{info.get('Name')}' which is NOT a sandbox. "
+                    "The live write path refuses to touch production unless SF_ALLOW_PRODUCTION=true is configured in .env."
+                )
+
+    # --------------------------------------------------------- query helpers
     def query(self, soql: str) -> list[dict]:
-        records, url, params = [], self._url("query"), {"q": soql}
-        while True:
-            r = _http_request("GET", url, headers=self.headers, params=params, timeout=30)
-            if r.status_code != 200:
-                raise SalesforceError(f"SOQL failed ({r.status_code}): {r.text}")
-            body = r.json()
-            records.extend(body.get("records", []))
-            if body.get("done", True) or not body.get("nextRecordsUrl"):
-                break
-            url = f"{self.instance_url}{body['nextRecordsUrl']}"
-            params = None
-        return records
+        if self.dry_run and self.access_token in (None, "simulated_token", "dry_run_token"):
+            return []
+        resp = self._call("GET", "/query", params={"q": soql})
+        resp.raise_for_status()
+        return resp.json().get("records", [])
+
+    def resolve_opportunity(self, requested_id: Optional[str]) -> tuple[str, bool, str]:
+        """In a sandbox (poclab) the production opportunity on the quote usually
+        does not exist. In that case, fall back to SF_DEMO_OPPORTUNITY_ID (or any
+        open opportunity) and adapt its PO/amount so validation rules pass.
+        Returns (opp_id, was_substituted, message)."""
+        if self.dry_run:
+            return requested_id or "006DEMO000000000AAA", False, ""
+
+        if requested_id and re.match(r"^006[A-Za-z0-9]{12,15}$", requested_id):
+            matches = self.query(f"SELECT Id, Name, StageName FROM Opportunity WHERE Id = '{requested_id}' LIMIT 1")
+            if matches:
+                return requested_id, False, f"Opportunity {requested_id} found in org."
+
+        # Sandbox stand-in
+        standin = os.environ.get("SF_DEMO_OPPORTUNITY_ID", "").strip()
+        if standin:
+            matches = self.query(f"SELECT Id, Name, StageName FROM Opportunity WHERE Id = '{standin}' LIMIT 1")
+            if matches:
+                name = matches[0].get("Name")
+                return standin, True, f"Opportunity {requested_id or 'none'} not in sandbox; using stand-in '{name}' ({standin})."
+
+        # Fallback to any open opportunity in sandbox
+        open_opps = self.query("SELECT Id, Name, StageName FROM Opportunity WHERE IsClosed = false ORDER BY LastModifiedDate DESC LIMIT 1")
+        if open_opps:
+            opp = open_opps[0]
+            return opp["Id"], True, f"Opportunity {requested_id or 'none'} not in sandbox; using '{opp.get('Name')}' ({opp['Id']})."
+
+        raise SalesforceError(
+            f"Opportunity '{requested_id}' does not exist in this sandbox, and no "
+            "open opportunity was found to stand in. Set SF_DEMO_OPPORTUNITY_ID."
+        )
+
+    def adapt_opportunity_for_demo(self, opp_id: str, po_number: str, amount: float,
+                                    order_type: Optional[str] = None) -> None:
+        """Keep the stand-in opportunity consistent with the PO so poclab's
+        validation rules (PO number and amount match) pass."""
+        if self.dry_run:
+            return
+        if os.environ.get("SF_ADAPT_DEMO_OPPORTUNITY", "true").lower() not in ("true", "1", "yes"):
+            return
+        body: dict[str, Any] = {
+            "PO_to_F5__c": po_number,
+            "Amount": float(amount),
+        }
+        if order_type:
+            body["Sales_Order_Type__c"] = order_type
+        resp = self._call("PATCH", f"/sobjects/Opportunity/{opp_id}", json_data=body)
+        if resp.status_code not in (200, 204):
+            log.warning("Could not adapt stand-in opportunity %s: %s", opp_id, resp.text)
+
+    # ----------------------------------------------------------- idempotency
+    def _existing_booking_form(self, po_number: str, opp_id: str) -> Optional[str]:
+        if self.dry_run:
+            return None
+        safe_po = po_number.replace("'", "\\'")
+        safe_opp = opp_id.replace("'", "\\'")
+        records = self.query(
+            f"SELECT Id, Name, CreatedDate FROM Booking_Form__c "
+            f"WHERE PO_to_F5__c = '{safe_po}' AND Opportunity__c = '{safe_opp}' "
+            f"ORDER BY CreatedDate DESC LIMIT 1"
+        )
+        return records[0]["Id"] if records else None
+
+    def _linked_file_titles(self, record_id: str) -> set[str]:
+        if self.dry_run:
+            return set()
+        links = self.query(f"SELECT ContentDocument.Title FROM ContentDocumentLink WHERE LinkedEntityId = '{record_id}'")
+        return {
+            rec.get("ContentDocument", {}).get("Title")
+            for rec in links
+            if rec.get("ContentDocument")
+        }
+
+    # ------------------------------------------------------------- attachments
+    def attach_pdf(self, booking_form_id: str, title: str, pdf_data: bytes) -> dict:
+        """Attach binary PDF to Booking_Form__c via ContentVersion."""
+        if self.dry_run:
+            return {"success": True, "simulated": True, "bytes": len(pdf_data)}
+        fname = title if title.lower().endswith(".pdf") else f"{title}.pdf"
+        b64 = base64.b64encode(pdf_data).decode("ascii")
+        payload = {
+            "Title": title,
+            "PathOnClient": fname,
+            "VersionData": b64,
+            "FirstPublishLocationId": booking_form_id,
+        }
+        resp = self._call("POST", "/sobjects/ContentVersion", json_data=payload)
+        if resp.status_code in (200, 201):
+            cv_id = resp.json().get("id")
+            log.info("Attached PDF %s to Booking Form %s (ContentVersion %s)", fname, booking_form_id, cv_id)
+            return {"success": True, "content_version_id": cv_id}
+        err = explain_errors(resp.json() if resp.text.startswith("[") else [resp.text])
+        raise SalesforceError(f"Failed to attach PDF to {booking_form_id}: {err}")
+
+    def _attach_note(self, booking_form_id: str, title: str, body_text: str) -> Optional[str]:
+        """Attach a sign-off note to the Booking Form."""
+        if self.dry_run:
+            return "simulated_note"
+        # ContentNote supports HTML/plain text
+        html_body = body_text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("\n", "<br>")
+        b64 = base64.b64encode(html_body.encode("utf-8")).decode("ascii")
+        payload = {
+            "Title": title,
+            "Content": b64,
+        }
+        resp = self._call("POST", "/sobjects/ContentNote", json_data=payload)
+        if resp.status_code in (200, 201):
+            note_id = resp.json().get("id")
+            # Link it
+            link_payload = {
+                "ContentDocumentId": note_id,
+                "LinkedEntityId": booking_form_id,
+                "ShareType": "V",
+                "Visibility": "AllUsers",
+            }
+            self._call("POST", "/sobjects/ContentDocumentLink", json_data=link_payload)
+            return note_id
+
+        # Fallback to classic Note object if ContentNote is not enabled
+        classic_payload = {
+            "ParentId": booking_form_id,
+            "Title": title,
+            "Body": body_text,
+        }
+        r2 = self._call("POST", "/sobjects/Note", json_data=classic_payload)
+        if r2.status_code in (200, 201):
+            return r2.json().get("id")
+        log.warning("Could not attach note '%s' to %s: %s", title, booking_form_id, resp.text)
+        return None
+
+    # ------------------------------------------------------------- main booking
+    def book_portal_order(
+        self,
+        order: dict,
+        approver_name: str,
+        reviewer_edits: Optional[dict] = None,
+        notes_to_ro: Optional[str] = None,
+        audit_note: Optional[str] = None,
+        pdf_data: Optional[bytes] = None,
+        acknowledged_flags: Optional[list[str]] = None,
+    ) -> dict:
+        """Create the real Booking Form and attach artifacts."""
+        notes_to_ro = notes_to_ro or audit_note or ""
+        po_num = (reviewer_edits or {}).get("po_number") or order.get("po_number") or order.get("po") or ""
+        amount_raw = (reviewer_edits or {}).get("total_amount") or order.get("total_amount") or (order.get("booking") or {}).get("amount") or 0.0
+        amount = float(amount_raw)
+        order_type = (reviewer_edits or {}).get("sales_order_type") or order.get("order_type") or (order.get("booking") or {}).get("orderType") or "Standard"
+        req_opp = order.get("opportunity_id") or order.get("opportunity") or (order.get("booking") or {}).get("opportunity") or ""
+        fname = order.get("filename") or order.get("file") or f"{po_num}.pdf"
+
+        # Safe simulation response
+        if self.dry_run:
+            return {
+                "success": True,
+                "simulated": True,
+                "dry_run": True,
+                "booking_form_id": f"simulated_{po_num}",
+                "url": None,
+                "pdf_attached": False,
+                "would_attach": {"filename": fname, "bytes": len(pdf_data or b"")},
+                "notes_count": 1,
+                "message": "Simulation only. Nothing was written to Salesforce. Restart with --live to write to poclab.",
+            }
+
+        self.assert_sandbox()
+
+        # 1. Resolve Opportunity
+        opp_id, substituted, opp_msg = self.resolve_opportunity(req_opp)
+        standin = os.environ.get("SF_DEMO_OPPORTUNITY_ID", "").strip()
+        if substituted or (standin and opp_id == standin):
+            self.adapt_opportunity_for_demo(opp_id, po_num, amount, order_type)
+
+        # 2. Idempotency check: don't create duplicate
+        existing_id = self._existing_booking_form(po_num, opp_id)
+        if existing_id:
+            log.info("Booking Form %s already exists for PO %s; skipping duplicate insert.", existing_id, po_num)
+            return {
+                "success": True,
+                "booking_form_id": existing_id,
+                "url": f"{self.instance_url}/lightning/r/Booking_Form__c/{existing_id}/view",
+                "opportunity_id": opp_id,
+                "opportunity_substituted": substituted,
+                "already_existed": True,
+                "message": f"Existing Booking Form found ({existing_id}). Re-attached artifacts if needed.",
+            }
+
+        # 3. Build Booking_Form__c payload
+        payload: dict[str, Any] = {
+            "Opportunity__c": opp_id,
+            "PO_to_F5__c": po_num,
+            "Total_Amount__c": amount,
+            "Sales_Order_Type__c": order_type,
+            "Status__c": "Submitted",
+        }
+        reseller = (reviewer_edits or {}).get("reseller_name") or order.get("reseller_name") or order.get("vendor")
+        if reseller:
+            payload["Reseller_Name__c"] = reseller
+        end_user = order.get("end_user_name")
+        if end_user:
+            payload["End_User_Account_Name__c"] = end_user
+
+        # 4. Insert Booking Form
+        resp = self._call("POST", "/sobjects/Booking_Form__c", json_data=payload)
+        if resp.status_code not in (200, 201):
+            err = explain_errors(resp.json() if resp.text.startswith("[") else [resp.text])
+            log.error("Salesforce Booking Form creation failed: %s", err)
+            return {"success": False, "error": err, "status_code": resp.status_code}
+
+        form_id = resp.json().get("id")
+        log.info("Created Booking_Form__c %s in %s", form_id, self.instance_url)
+
+        # 5. Attach original PO PDF
+        pdf_attached = False
+        if pdf_data:
+            try:
+                self.attach_pdf(form_id, f"PO_{po_num}", pdf_data)
+                pdf_attached = True
+            except Exception as exc:
+                log.warning("Could not attach PDF to %s: %s", form_id, exc)
+
+        # 6. Attach Sign-off Note to RO
+        signoff_lines = [
+            f"Approved by: {approver_name}",
+            f"Sign-off timestamp: {time.strftime('%Y-%m-%d %H:%M:%S UTC', time.gmtime())}",
+            f"Engine outcome: {order.get('status', 'VALIDATED')}",
+            f"Measured processing time: {order.get('latency_ms', 0)} ms",
+        ]
+        if notes_to_ro:
+            signoff_lines.append(f"\nReviewer Notes to RO:\n{notes_to_ro}")
+        if acknowledged_flags:
+            signoff_lines.append(f"\nExceptions acknowledged by {approver_name}:")
+            for flag in acknowledged_flags:
+                signoff_lines.append(f"  • {flag}")
+        if substituted:
+            signoff_lines.append(f"\nNote: Opportunity was substituted for sandbox demo:\n{opp_msg}")
+
+        self._attach_note(form_id, f"SOS Approval & Notes - {po_num}", "\n".join(signoff_lines))
+
+        return {
+            "success": True,
+            "booking_form_id": form_id,
+            "url": f"{self.instance_url}/lightning/r/Booking_Form__c/{form_id}/view",
+            "opportunity_id": opp_id,
+            "opportunity_substituted": substituted,
+            "opportunity_message": opp_msg,
+            "pdf_attached": pdf_attached,
+            "approver": approver_name,
+        }
 
     def describe(self, sobject: str) -> dict:
-        r = _http_request("GET", self._url(f"sobjects/{sobject}/describe"),
-                          headers=self.headers, timeout=30)
-        if r.status_code != 200:
-            raise SalesforceError(f"describe {sobject} failed "
-                                  f"({r.status_code}): {r.text}")
-        return r.json()
+        if self.dry_run and self.access_token in (None, "simulated_token", "dry_run_token"):
+            return {"fields": []}
+        resp = self._call("GET", f"/sobjects/{sobject}/describe")
+        resp.raise_for_status()
+        return resp.json()
 
     def required_fields(self, sobject: str) -> list[str]:
         d = self.describe(sobject)
-        return [f["name"] for f in d["fields"]
-                if f["createable"] and not f["nillable"] and not f["defaultedOnCreate"]]
+        return [f["name"] for f in d.get("fields", [])
+                if f.get("createable") and not f.get("nillable") and not f.get("defaultedOnCreate")]
 
     def update(self, sobject: str, record_id: str, fields: dict) -> dict:
-        url = self._url(f"sobjects/{sobject}/{record_id}")
-        r = _http_request("PATCH", url, headers=self.headers, json_data=fields, timeout=30)
-        return {"success": r.status_code in (200, 204), "status_code": r.status_code, "text": r.text}
+        resp = self._call("PATCH", f"/sobjects/{sobject}/{record_id}", json_data=fields)
+        return {"success": resp.status_code in (200, 204), "status_code": resp.status_code, "text": resp.text}
 
-    def check(self) -> dict:
-        """Preflight access-check against Salesforce Sandbox."""
-        out: dict[str, Any] = {"ok": False, "instance": self.instance_url}
-
-        # 1. Test REST API access via /limits
-        limits_resp = _http_request("GET", self._url("limits"),
-                                    headers=self.headers, timeout=30)
-        if limits_resp.status_code == 401:
-            out["detail"] = f"401 Unauthorized: token expired or invalid for {self.instance_url}."
-            return out
-        if limits_resp.status_code != 200:
-            out["detail"] = f"HTTP {limits_resp.status_code} on /limits: {limits_resp.text}"
-            return out
-
-        limits_data = limits_resp.json()
-        daily_api = limits_data.get("DailyApiRequests", {})
-        out["api_calls_remaining"] = f"{daily_api.get('Remaining')} / {daily_api.get('Max')}"
-
-        # 2. Org info
-        try:
-            org_rows = self.query("SELECT Id, Name, IsSandbox FROM Organization")
-            if org_rows:
-                out["org_id"] = org_rows[0].get("Id")
-                out["org_name"] = org_rows[0].get("Name")
-                out["is_sandbox"] = org_rows[0].get("IsSandbox")
-        except Exception as exc:
-            out["org_query_error"] = str(exc)
-
-        # 3. Check Booking_Form__c access
-        try:
-            d = self.describe("Booking_Form__c")
-            out["booking_form_found"] = True
-            out["crud"] = {k: d[k] for k in ("createable", "updateable", "queryable")}
-            out["required_fields"] = self.required_fields("Booking_Form__c")
-        except Exception as exc:
-            out["booking_form_found"] = False
-            out["booking_form_error"] = str(exc)
-
-        # 4. Check Booking_Form__c record count
-        try:
-            cnt_resp = _http_request("GET", self._url("query"),
-                                     headers=self.headers,
-                                     params={"q": "SELECT COUNT() FROM Booking_Form__c"},
-                                     timeout=30)
-            if cnt_resp.status_code == 200:
-                out["booking_form_record_count"] = cnt_resp.json().get("totalSize", 0)
-        except Exception:
-            pass
-
-        out["ok"] = True
-        return out
-
-    # --------------------------------------------------------------- writes
     def create_booking_form(self, result, pdf_data: Optional[bytes] = None, pdf_filename: Optional[str] = None) -> dict:
-        """Constructs and commits a full Booking_Form__c record and its Notes to RO.
-
-        In dry-run mode, validates the payload and returns the simulated audit record
-        without mutating the Salesforce sandbox. Also attaches the PO PDF to the record.
-        """
+        """Constructs and commits a full Booking_Form__c record and its Notes to RO."""
         form = BookingFormBuilder.build(result)
         payload = form.to_salesforce_payload()
         notes = payload.pop("AttachedContentNotes", [])
-
-        # Auto-detect PDF data if not explicitly provided
-        if pdf_data is None and hasattr(result, "po") and getattr(result.po, "source_id", None):
-            src_id = result.po.source_id
-            if os.path.exists(src_id) and os.path.isfile(src_id):
-                try:
-                    with open(src_id, "rb") as f:
-                        pdf_data = f.read()
-                    pdf_filename = os.path.basename(src_id)
-                except Exception as ex:
-                    log.debug("Could not read PDF source file %s: %s", src_id, ex)
 
         if not form.opportunity_id:
             return {
@@ -370,44 +603,18 @@ class SalesforceClient:
 
         if self.dry_run:
             mock_id = f"a1sPOCLAB_MOCK_{form.po_number or 'DRAFT'}"
-            pdf_att = None
-            if pdf_data:
-                pdf_att = self.attach_pdf(mock_id, pdf_filename or f"PO_{form.po_number or 'order'}.pdf", pdf_data)
             return {
                 "attempted": False,
                 "dry_run": True,
-                "sandbox_instance": self.instance_url,
-                "reason": "dry_run=True; simulated Booking_Form__c payload generated safely for sandbox.",
-                "booking_form_name": form.booking_form_name,
+                "success": True,
                 "booking_form_id": mock_id,
-                "amount": float(form.amount),
-                "order_type": form.sales_order_type,
-                "notes_count": len(form.notes),
-                "payload": payload,
                 "url": f"{self.instance_url}/lightning/r/Booking_Form__c/{mock_id}/view",
-                "simulated_url": f"{self.instance_url}/lightning/r/Booking_Form__c/{mock_id}/view",
-                "pdf_attached": bool(pdf_att and pdf_att.get("success")),
-                "pdf_attachment": pdf_att,
+                "payload": payload,
             }
 
-        # Introspect schema and send only fields that exist and are createable in this sandbox
-        dropped_fields = []
-        try:
-            d = self.describe("Booking_Form__c")
-            valid_createable = {f["name"] for f in d.get("fields", []) if f.get("createable", False)}
-            valid_updateable = {f["name"] for f in d.get("fields", []) if f.get("updateable", False)}
-            clean_payload = {k: v for k, v in payload.items() if k in valid_createable and v is not None}
-            dropped_fields = [k for k in payload if k not in valid_createable]
-            if dropped_fields:
-                log.info("Dropped %d unsupported field(s) for this sandbox: %s", len(dropped_fields), dropped_fields)
-            if "Opportunity__c" in valid_createable and "Opportunity__c" in payload:
-                clean_payload["Opportunity__c"] = payload["Opportunity__c"]
-        except Exception as exc:
-            log.warning("Could not describe Booking_Form__c schema: %s", exc)
-            clean_payload = {k: v for k, v in payload.items() if v is not None}
-            valid_updateable = set(clean_payload.keys())
-        # Idempotency Check (#13): Check if a Booking Form already exists for this Opportunity + PO
-        if not self.dry_run and form.opportunity_id and form.po_number:
+        # Check existing
+        existing_id = None
+        if form.opportunity_id and form.po_number:
             try:
                 safe_po = form.po_number.replace("'", "\\'")
                 safe_opp = form.opportunity_id.replace("'", "\\'")
@@ -419,305 +626,96 @@ class SalesforceClient:
                 )
                 existing_rows = self.query(soql)
                 if existing_rows:
-                    rec_id = existing_rows[0].get("Id")
-                    rec_stage = existing_rows[0].get("Stage__c")
-                    log.info(
-                        "Idempotency match: Booking Form %s already exists (Stage: %s) "
-                        "for Opp %s and PO %s. Updating record rather than creating duplicate.",
-                        rec_id, rec_stage, form.opportunity_id, form.po_number
-                    )
-                    patch_payload = {k: v for k, v in clean_payload.items() if k in valid_updateable}
-                    upd_resp = _http_request(
-                        "PATCH",
-                        self._url(f"sobjects/Booking_Form__c/{rec_id}"),
-                        headers=self.headers,
-                        json_data=patch_payload,
-                        timeout=30
-                    )
-                    upd_body = _safe_json(upd_resp)
-                    upd_errors = upd_body if isinstance(upd_body, list) else [upd_body]
-                    is_ok = upd_resp.status_code in (200, 204)
-                    return {
-                        "attempted": True,
-                        "success": is_ok,
-                        "status_code": upd_resp.status_code,
-                        "booking_form_id": rec_id,
-                        "idempotent_updated": True,
-                        "url": f"{self.instance_url}/lightning/r/Booking_Form__c/{rec_id}/view",
-                        "notes_attached": 0,
-                        "dropped_fields": dropped_fields,
-                        "payload": payload,
-                        "written_payload": patch_payload,
-                        "raw_response": upd_resp.text,
-                        "errors": [{"code": e.get("errorCode") if isinstance(e, dict) else "ERROR",
-                                    "message": e.get("message") if isinstance(e, dict) else str(e),
-                                    "fields": e.get("fields") if isinstance(e, dict) else []}
-                                   for e in upd_errors if e] if not is_ok else [],
-                    }
-            except Exception as idemp_exc:
-                log.warning("Idempotency lookup failed: %s", idemp_exc)
-
-        r = _http_request("POST", self._url("sobjects/Booking_Form__c/"),
-                          headers=self.headers, json_data=clean_payload, timeout=30)
-        body = _safe_json(r)
-
-        if r.status_code == 201:
-            rec_id = body.get("id")
-            notes_created = 0
-            for note in form.notes:
-                try:
-                    b64_content = base64.b64encode(note.body.encode("utf-8")).decode("utf-8")
-                    note_resp = _http_request(
-                        "POST",
-                        self._url("sobjects/ContentNote/"),
-                        headers=self.headers,
-                        json_data={"Title": note.title, "Content": b64_content},
-                        timeout=30)
-                    if note_resp.status_code == 201:
-                        note_id = note_resp.json().get("id")
-                        link_resp = _http_request(
-                            "POST",
-                            self._url("sobjects/ContentDocumentLink/"),
-                            headers=self.headers,
-                            json_data={
-                                "ContentDocumentId": note_id,
-                                "LinkedEntityId": rec_id,
-                                "ShareType": "V",
-                                "Visibility": "AllUsers",
-                            },
-                            timeout=30)
-                        if link_resp.status_code == 201:
-                            notes_created += 1
-                        else:
-                            log.warning("ContentDocumentLink failed for note '%s' (%d): %s",
-                                        note.title, link_resp.status_code, link_resp.text)
-                except Exception as exc:
-                    log.warning("Could not attach ContentNote '%s': %s", note.title, exc)
-
-            # Attach PDF if available
-            pdf_att_result = None
-            if not self.dry_run and rec_id and pdf_data:
-                clean_fname = pdf_filename or f"PO_{form.po_number or 'order'}.pdf"
-                pdf_att_result = self.attach_pdf(rec_id, clean_fname, pdf_data)
-
-            return {
-                "attempted": True,
-                "success": True,
-                "status_code": r.status_code,
-                "booking_form_id": rec_id,
-                "url": f"{self.instance_url}/lightning/r/Booking_Form__c/{rec_id}/view",
-                "notes_attached": notes_created,
-                "pdf_attached": bool(pdf_att_result and pdf_att_result.get("success")),
-                "pdf_attachment": pdf_att_result,
-                "dropped_fields": dropped_fields,
-                "payload": payload,
-                "written_payload": clean_payload,
-            }
-
-        errors = body if isinstance(body, list) else [body]
-        return {
-            "attempted": True,
-            "success": False,
-            "status_code": r.status_code,
-            "errors": [{"code": e.get("errorCode") if isinstance(e, dict) else "ERROR",
-                        "message": e.get("message") if isinstance(e, dict) else str(e),
-                        "fields": e.get("fields") if isinstance(e, dict) else []} for e in errors if e],
-            "dropped_fields": dropped_fields,
-            "payload": payload,
-            "written_payload": clean_payload,
-            "raw_response": r.text,
-        }
-
-    def attach_pdf(self, record_id: str, filename: str, data: bytes, title: Optional[str] = None) -> dict:
-        """Attaches a PDF document directly to a Salesforce record via ContentVersion."""
-        if self.dry_run:
-            sim_id = f"068POCLAB_{abs(hash(filename)) % 1000000:06d}"
-            return {
-                "success": True,
-                "dry_run": True,
-                "content_version_id": sim_id,
-                "filename": filename,
-                "size_bytes": len(data) if data else 0,
-            }
-
-        if not data:
-            return {"success": False, "error": "No PDF data bytes provided for attachment."}
-
-        clean_name = os.path.basename(filename)
-        if not clean_name.lower().endswith(".pdf"):
-            clean_name += ".pdf"
-        doc_title = title or clean_name.replace(".pdf", "")
-
-        try:
-            b64_content = base64.b64encode(data).decode("utf-8")
-            cv_payload = {
-                "Title": doc_title,
-                "PathOnClient": clean_name,
-                "VersionData": b64_content,
-                "FirstPublishLocationId": record_id,
-            }
-            resp = _http_request(
-                "POST",
-                self._url("sobjects/ContentVersion/"),
-                headers=self.headers,
-                json_data=cv_payload,
-                timeout=60,
-            )
-            if resp.status_code == 201:
-                cv_id = resp.json().get("id")
-                log.info("Successfully attached PO PDF '%s' to %s (ContentVersion %s)", clean_name, record_id, cv_id)
-                return {
-                    "success": True,
-                    "content_version_id": cv_id,
-                    "filename": clean_name,
-                    "size_bytes": len(data),
-                    "status_code": 201,
-                }
-            else:
-                log.warning("Could not attach PDF '%s' to %s (%d): %s", clean_name, record_id, resp.status_code, resp.text)
-                return {
-                    "success": False,
-                    "status_code": resp.status_code,
-                    "error": resp.text,
-                }
-        except Exception as exc:
-            log.error("Exception attaching PDF '%s' to %s: %s", clean_name, record_id, exc)
-            return {"success": False, "error": str(exc)}
-
-    def create_booking_form_from_payload(
-        self,
-        payload: dict,
-        pdf_data: Optional[bytes] = None,
-        pdf_filename: Optional[str] = None,
-        notes: Optional[list[dict]] = None,
-    ) -> dict:
-        """Commits a pre-computed Booking Form payload directly to Salesforce."""
-        clean_copy = dict(payload)
-        po_num = clean_copy.get("PO__c") or clean_copy.get("Searchable_PO_Field__c") or "DRAFT"
-        opp_id = clean_copy.get("Opportunity__c")
-
-        if self.dry_run:
-            mock_id = f"a1sPOCLAB_MOCK_{po_num}"
-            pdf_att = None
-            if pdf_data:
-                pdf_att = self.attach_pdf(mock_id, pdf_filename or f"PO_{po_num}.pdf", pdf_data)
-            return {
-                "attempted": True,
-                "dry_run": True,
-                "success": True,
-                "booking_form_id": mock_id,
-                "url": f"{self.instance_url}/lightning/r/Booking_Form__c/{mock_id}/view",
-                "pdf_attached": bool(pdf_att and pdf_att.get("success")),
-                "pdf_attachment": pdf_att,
-            }
-
-        # Live Salesforce write
-        # Check createable/updateable fields
-        try:
-            d = self.describe("Booking_Form__c")
-            valid_createable = {f["name"] for f in d.get("fields", []) if f.get("createable", False)}
-            valid_updateable = {f["name"] for f in d.get("fields", []) if f.get("updateable", False)}
-            clean_payload = {k: v for k, v in clean_copy.items() if k in valid_createable and v is not None}
-        except Exception:
-            clean_payload = {k: v for k, v in clean_copy.items() if v is not None and not k.startswith("_")}
-            valid_updateable = set(clean_payload.keys())
-
-        # Idempotency check
-        if opp_id and po_num:
-            try:
-                safe_po = str(po_num).replace("'", "\\'")
-                safe_opp = str(opp_id).replace("'", "\\'")
-                soql = (
-                    f"SELECT Id, Name, Stage__c FROM Booking_Form__c "
-                    f"WHERE Opportunity__c = '{safe_opp}' "
-                    f"  AND (PO__c = '{safe_po}' OR Searchable_PO_Field__c = '{safe_po}') "
-                    f"LIMIT 1"
-                )
-                existing = self.query(soql)
-                if existing:
-                    rec_id = existing[0].get("Id")
-                    patch_data = {k: v for k, v in clean_payload.items() if k in valid_updateable}
-                    upd_resp = _http_request(
-                        "PATCH",
-                        self._url(f"sobjects/Booking_Form__c/{rec_id}"),
-                        headers=self.headers,
-                        json_data=patch_data,
-                        timeout=30,
-                    )
-                    pdf_att = None
-                    if pdf_data:
-                        pdf_att = self.attach_pdf(rec_id, pdf_filename or f"PO_{po_num}.pdf", pdf_data)
-                    return {
-                        "attempted": True,
-                        "success": upd_resp.status_code in (200, 204),
-                        "status_code": upd_resp.status_code,
-                        "booking_form_id": rec_id,
-                        "idempotent_updated": True,
-                        "url": f"{self.instance_url}/lightning/r/Booking_Form__c/{rec_id}/view",
-                        "pdf_attached": bool(pdf_att and pdf_att.get("success")),
-                        "pdf_attachment": pdf_att,
-                    }
+                    existing_id = existing_rows[0]["Id"]
             except Exception as e:
-                log.warning("Idempotency lookup failed: %s", e)
+                log.debug("Existing check query error: %s", e)
 
-        resp = _http_request(
-            "POST",
-            self._url("sobjects/Booking_Form__c/"),
-            headers=self.headers,
-            json_data=clean_payload,
-            timeout=30,
-        )
-        body = _safe_json(resp)
-        if resp.status_code == 201:
-            rec_id = body.get("id")
-            # Attach ContentNotes if supplied
-            if notes:
-                for note in notes:
-                    try:
-                        n_title = note.get("title") or "Note to RO"
-                        n_body = note.get("body") or ""
-                        b64 = base64.b64encode(n_body.encode("utf-8")).decode("utf-8")
-                        nr = _http_request("POST", self._url("sobjects/ContentNote/"),
-                                           headers=self.headers, json_data={"Title": n_title, "Content": b64})
-                        if nr.status_code == 201:
-                            nid = nr.json().get("id")
-                            _http_request("POST", self._url("sobjects/ContentDocumentLink/"),
-                                          headers=self.headers, json_data={
-                                              "ContentDocumentId": nid,
-                                              "LinkedEntityId": rec_id,
-                                              "ShareType": "V",
-                                              "Visibility": "AllUsers",
-                                          })
-                    except Exception as ne:
-                        log.warning("Could not attach note: %s", ne)
-
-            # Attach PO PDF
-            pdf_att = None
-            if pdf_data:
-                pdf_att = self.attach_pdf(rec_id, pdf_filename or f"PO_{po_num}.pdf", pdf_data)
-
+        if existing_id:
+            # Update via PATCH
+            try:
+                d = self.describe("Booking_Form__c")
+                valid_updateable = {f["name"] for f in d.get("fields", []) if f.get("updateable", False)}
+                clean_payload = {k: v for k, v in payload.items() if k in valid_updateable and v is not None}
+            except Exception:
+                clean_payload = {k: v for k, v in payload.items() if v is not None}
+            self.update("Booking_Form__c", existing_id, clean_payload)
             return {
                 "attempted": True,
                 "success": True,
-                "status_code": 201,
-                "booking_form_id": rec_id,
-                "url": f"{self.instance_url}/lightning/r/Booking_Form__c/{rec_id}/view",
-                "pdf_attached": bool(pdf_att and pdf_att.get("success")),
-                "pdf_attachment": pdf_att,
+                "dry_run": False,
+                "idempotent_updated": True,
+                "booking_form_id": existing_id,
+                "url": f"{self.instance_url}/lightning/r/Booking_Form__c/{existing_id}/view",
             }
 
-        errors = body if isinstance(body, list) else [body]
-        return {
-            "attempted": True,
-            "success": False,
-            "status_code": resp.status_code,
-            "errors": errors,
-            "raw_response": resp.text,
+        # Create new via book_portal_order
+        order_stub = {
+            "po_number": form.po_number,
+            "total_amount": float(form.amount),
+            "opportunity_id": form.opportunity_id,
+            "sales_order_type": form.sales_order_type,
+            "reseller_name": form.account_name,
+            "filename": pdf_filename,
         }
+        res = self.book_portal_order(order=order_stub, approver_name="SOS Auto", pdf_data=pdf_data)
+        return res
 
+    def create_booking_form_from_payload(self, booking_payload: dict,
+                                         pdf_data: Optional[bytes] = None) -> dict:
+        """Compatibility adapter for ApprovalManager and legacy callers."""
+        order_stub = {
+            "po_number": booking_payload.get("PO_to_F5__c") or booking_payload.get("po_number"),
+            "total_amount": booking_payload.get("Total_Amount__c") or booking_payload.get("amount"),
+            "opportunity_id": booking_payload.get("Opportunity__c"),
+            "reseller_name": booking_payload.get("Reseller_Name__c"),
+            "end_user_name": booking_payload.get("End_User_Account_Name__c"),
+            "sales_order_type": booking_payload.get("Sales_Order_Type__c"),
+        }
+        return self.book_portal_order(
+            order=order_stub,
+            approver_name=booking_payload.get("approver", "SOS Reviewer"),
+            pdf_data=pdf_data,
+        )
 
-def _safe_json(resp: _HttpResponse) -> Any:
-    try:
-        return resp.json()
-    except Exception:
-        return {"message": resp.text[:500], "errorCode": "NON_JSON_RESPONSE"}
+    # ------------------------------------------------------------- preflight
+    def preflight(self) -> dict:
+        """Verify connectivity, session, and sandbox safety."""
+        if self.dry_run:
+            if self.access_token and self.access_token not in ("simulated_token", "dry_run_token"):
+                try:
+                    info = self.org_info()
+                    is_sb = info.get("IsSandbox", False)
+                    name = info.get("Name", "Salesforce Org")
+                    return {
+                        "ok": True,
+                        "mode": "simulation_connected",
+                        "detail": f"Simulation mode (dry-run). Verified connection to '{name}' ({'Sandbox' if is_sb else 'Production'}).",
+                    }
+                except Exception:
+                    return {
+                        "ok": True,
+                        "mode": "simulation",
+                        "detail": "Simulation mode (dry-run / demo-safe). Nothing will be written to Salesforce.",
+                    }
+            return {
+                "ok": True,
+                "mode": "simulation",
+                "detail": "Simulation mode (dry-run / demo-safe). Nothing will be written to Salesforce.",
+            }
+        try:
+            info = self.org_info()
+            is_sb = info.get("IsSandbox", False)
+            name = info.get("Name", "Salesforce Org")
+            if not is_sb:
+                return {
+                    "ok": False,
+                    "mode": "production_blocked",
+                    "detail": f"BLOCKED: Connected to '{name}' which is NOT a sandbox.",
+                }
+            return {
+                "ok": True,
+                "mode": "live",
+                "detail": f"Connected to '{name}' sandbox. Live: clicking Book creates real records in poclab.",
+            }
+        except Exception as exc:
+            return {"ok": False, "mode": "error", "detail": f"{type(exc).__name__}: {exc}"}

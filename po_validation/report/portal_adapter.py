@@ -228,4 +228,5 @@ def result_to_portal_order(
         "pdf_b64": pdf_b64,
         "live": True,
         "source_tag": source_tag,
+        "checklist_total": 11,
     }

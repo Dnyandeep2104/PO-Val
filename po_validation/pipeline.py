@@ -53,10 +53,19 @@ class Pipeline:
         self.defer_window_hours = defer_window_hours
 
     # ------------------------------------------------------------ one doc
+    def parse_document(self, doc: Document) -> ParsedPO:
+        return registry.parse(doc.data, doc.source_id)
+
+    def resolve_quote(self, po: ParsedPO) -> Quote:
+        return self._resolve(po) or Quote(quote_number=po.quote_number or "", found=False)
+
+    def run_checks(self, po: ParsedPO, quote: Optional[Quote]) -> ValidationResult:
+        return self.engine.run(po, quote)
+
     def process_document(self, doc: Document) -> ValidationResult:
-        po = registry.parse(doc.data, doc.source_id)
+        po = self.parse_document(doc)
         quote = self._resolve(po)
-        result = self.engine.run(po, quote)
+        result = self.run_checks(po, quote)
 
         # A document we have already finished with is a duplicate. This is
         # belt-and-braces: list_new already filters on hash, but a manual

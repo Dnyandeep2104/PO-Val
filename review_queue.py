@@ -552,18 +552,21 @@ class SOSPortalHandler(http.server.SimpleHTTPRequestHandler):
             self.send_error(404, "PDF Not Found")
             return
 
-        # 7. System Health Check
-        if path == "/api/health":
+        # 7. System Health & Status Checks
+        if path in ("/api/health", "/api/status"):
+            stat = self.service.system_status() if self.service else {}
             health = {
                 "status": "healthy",
                 "azure_blob": os.environ.get("AZURE_STORAGE_CONNECTION_STRING") is not None or os.environ.get("AZURE_STORAGE_CONTAINER") is not None,
                 "salesforce_dry_run": self.manager.sf.dry_run,
                 "salesforce_instance": self.manager.sf.instance_url,
                 "orders_count": len(self.service.store.list_orders()) if self.service else 0,
+                **stat,
             }
             resp = json.dumps(health).encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
+            self.send_header("Access-Control-Allow-Origin", "*")
             self.send_header("Content-Length", str(len(resp)))
             self.end_headers()
             self.wfile.write(resp)
@@ -606,16 +609,54 @@ class SOSPortalHandler(http.server.SimpleHTTPRequestHandler):
                 except Exception:
                     pass
 
-            approver = body_json.get("approver", "Chinmay Dhok (SOS Specialist)")
-            note = body_json.get("note", "")
+            approver = body_json.get("approver") or os.environ.get("PORTAL_APPROVER_NAME", "Chinmay Dhok (SOS Specialist)")
+            note = body_json.get("note") or body_json.get("notes_to_ro", "")
+            edits = body_json.get("reviewer_edits")
+            flags = body_json.get("acknowledged_flags")
 
             if self.service and self.service.store.get_order(target):
-                result = self.service.book_order_to_salesforce(target, approver_name=approver, audit_note=note)
+                result = self.service.book_order_to_salesforce(
+                    target,
+                    approver_name=approver,
+                    audit_note=note,
+                    reviewer_edits=edits,
+                    acknowledged_flags=flags,
+                )
             else:
                 result = self.manager.approve_order(target, approver_name=approver, notes=note)
 
             resp = json.dumps(result).encode("utf-8")
             self.send_response(200 if result.get("success") else 400)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("Content-Length", str(len(resp)))
+            self.end_headers()
+            self.wfile.write(resp)
+            return
+
+        # 2. Re-check Quote Route
+        if path.startswith("/api/recheck/"):
+            target = urllib.parse.unquote(path.replace("/api/recheck/", ""))
+            if self.service:
+                updated = self.service.recheck(target)
+                if updated:
+                    resp = json.dumps(updated).encode("utf-8")
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Access-Control-Allow-Origin", "*")
+                    self.send_header("Content-Length", str(len(resp)))
+                    self.end_headers()
+                    self.wfile.write(resp)
+                    return
+            self.send_error(404, "Order not found or recheck unavailable")
+            return
+
+        # 3. Reset Demo State
+        if path == "/api/reset":
+            if self.service:
+                self.service.reset_portal_state()
+            resp = json.dumps({"success": True, "message": "Portal state reset."}).encode("utf-8")
+            self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.send_header("Access-Control-Allow-Origin", "*")
             self.send_header("Content-Length", str(len(resp)))
@@ -679,9 +720,87 @@ class SOSPortalHandler(http.server.SimpleHTTPRequestHandler):
         self.send_error(404, "Not Found")
 
 
-def run_server(manager: ApprovalManager, port: int = 8080, live_service: Optional[LivePOService] = None):
+def run_preflight(live: bool = False) -> int:
+    """Validate connectivity and readiness of all external dependencies."""
+    from po_validation.ai.client import load_env_file
+    load_env_file()
+    is_live = live or os.environ.get("SF_LIVE_MODE", "false").lower() in ("true", "1", "yes")
+    all_ok = True
+    print("\n🔍 Running RevOps SOS Live Pre-Flight Checks...")
+
+    # 1. Salesforce
+    sf = SalesforceClient.from_env(dry_run=(not is_live))
+    sf_stat = sf.preflight()
+    if sf_stat.get("ok"):
+        print(f"  \033[32mOK\033[0m  Salesforce   {sf_stat.get('detail')}")
+    else:
+        print(f"  \033[31m!!\033[0m  Salesforce   {sf_stat.get('detail')}")
+        all_ok = False
+
+    # 2. Quotes
+    sf_user = os.environ.get("SNOWFLAKE_USER", "").strip()
+    if sf_user:
+        try:
+            from po_validation.resolve.snowflake_live import SnowflakeConnectorQuoteSource
+            src = SnowflakeConnectorQuoteSource.from_env()
+            q_stat = src.preflight()
+            if q_stat.get("ok"):
+                print(f"  \033[32mOK\033[0m  Quotes       {q_stat.get('detail')}")
+            else:
+                print(f"  \033[33m!!\033[0m  Quotes       Snowflake live failed ({q_stat.get('detail')}); fallback to my_quotes.json ready.")
+        except Exception as e:
+            print(f"  \033[33m!!\033[0m  Quotes       Snowflake live check error ({e}); fallback to my_quotes.json.")
+    else:
+        qf = Path("my_quotes.json")
+        if qf.is_file():
+            print(f"  \033[32mOK\033[0m  Quotes       Offline export 'my_quotes.json' ready.")
+        else:
+            print(f"  \033[31m!!\033[0m  Quotes       Neither SNOWFLAKE_USER nor my_quotes.json found.")
+            all_ok = False
+
+    # 3. Azure Blob
+    sas = os.environ.get("AZURE_STORAGE_SAS_TOKEN", "").strip()
+    conn = os.environ.get("AZURE_STORAGE_CONNECTION_STRING", "").strip()
+    has_valid_sas = sas and "..." not in sas
+    has_valid_conn = conn and "AccountName=..." not in conn and "..." not in conn
+    if has_valid_sas or has_valid_conn:
+        try:
+            from po_validation.ingest.blob import BlobSource
+            auth = "sas_token" if has_valid_sas else "connection_string"
+            bs = BlobSource(auth=auth, prefix=os.environ.get("AZURE_STORAGE_PREFIX", "inbox/"))
+            b_stat = bs.check_access()
+            if b_stat.get("ok"):
+                print(f"  \033[32mOK\033[0m  Azure Blob   {b_stat.get('detail')}")
+            else:
+                print(f"  \033[31m!!\033[0m  Azure Blob   {b_stat.get('detail')}")
+                all_ok = False
+        except Exception as e:
+            print(f"  \033[31m!!\033[0m  Azure Blob   Check failed: {e}")
+            all_ok = False
+    else:
+        print("  \033[33m--\033[0m  Azure Blob   Unconfigured / placeholder in .env (Set AZURE_STORAGE_SAS_TOKEN for live email intake).")
+
+    # 4. Folder
+    inbox = Path("inbound_pos")
+    inbox.mkdir(parents=True, exist_ok=True)
+    print(f"  \033[32mOK\033[0m  Folder       Drop PDFs into {inbox}/")
+
+    print()
+    return 0 if all_ok else 1
+
+
+def run_server(
+    manager: ApprovalManager,
+    port: int = 8080,
+    live_service: Optional[LivePOService] = None,
+    preload_folder: Optional[str] = None,
+    backfill: bool = False,
+):
     if live_service is None:
-        live_service = LivePOService(salesforce_client=manager.sf)
+        live_service = LivePOService(salesforce_client=manager.sf, backfill_blob=backfill)
+    if preload_folder:
+        loaded = live_service.preload(preload_folder)
+        log.info("Preloaded %d sample order(s) from %s", loaded, preload_folder)
     live_service.start_background_watchers()
 
     SOSPortalHandler.manager = manager
@@ -714,13 +833,27 @@ def main(argv=None) -> int:
     ap.add_argument("--interactive", action="store_true", help="Step through pending approvals interactively")
     ap.add_argument("--serve", action="store_true", help="Launch local web dashboard")
     ap.add_argument("--port", type=int, default=8080, help="Web dashboard port (default: 8080)")
+    ap.add_argument("--preflight", action="store_true", help="Run preflight checks against Salesforce, Snowflake, and Azure Blob")
+    ap.add_argument("--reset", action="store_true", help="Clear portal orders and Azure blob state")
+    ap.add_argument("--preload", metavar="DIR", help="Preload sample PO PDFs from directory before starting server")
+    ap.add_argument("--backfill", action="store_true", help="Process existing blobs in container")
     args = ap.parse_args(argv)
 
-    sf_client = SalesforceClient(dry_run=(not args.live))
+    if args.preflight:
+        return run_preflight(live=args.live)
+
+    if args.reset:
+        srv = LivePOService()
+        srv.reset_portal_state()
+        print("✅ Portal orders and Azure blob state cleared.")
+        return 0
+
+    is_live = args.live or os.environ.get("SF_LIVE_MODE", "false").lower() in ("true", "1", "yes")
+    sf_client = SalesforceClient.from_env(dry_run=(not is_live))
     manager = ApprovalManager(queue_dir=args.queue_dir, salesforce_client=sf_client)
 
     if args.serve:
-        run_server(manager, port=args.port)
+        run_server(manager, port=args.port, preload_folder=args.preload, backfill=args.backfill)
         return 0
 
     if args.approve:

@@ -1,34 +1,46 @@
 """Live backend service for RevOps SOS PO Review Portal.
 
 Coordinates:
-- Order storage & persistence (out/portal_orders/)
+- Order storage & persistence (out/portal/)
 - Background Azure Blob Storage & Inbound folder watchers
 - Server-Sent Events (SSE) broadcasting real-time ingestion & validation status
 - 1-Click Salesforce Booking Form creation with PO PDF ContentVersion attachment
+- Dedicated reviewer controls, exception sign-offs, and idempotency locks
 """
 
 from __future__ import annotations
 
 import base64
-from datetime import datetime
+from datetime import datetime, timezone
 import json
 import logging
 import os
 from pathlib import Path
 import queue
+import re
+import shutil
 import threading
 import time
 from typing import Any, Callable, Optional
 
 from .ai.client import load_env_file
 from .act.salesforce import SalesforceClient
+from .ingest.blob import BlobSource, BlobWatcher
 from .ingest.sources import Document
 from .models import Outcome, ValidationResult
 from .pipeline import Pipeline
 from .report.portal_adapter import result_to_portal_order
+from .resolve.base import StubQuoteSource
 from .validate.engine import load_engine
 
 log = logging.getLogger(__name__)
+
+
+def safe_filename(name: str) -> str:
+    """Strip directories and non-safe characters from filenames."""
+    bname = os.path.basename(name)
+    cleaned = re.sub(r"[^\w\.\-\ ]", "_", bname)
+    return cleaned.strip() or "order.pdf"
 
 
 # --------------------------------------------------------------------------
@@ -57,7 +69,7 @@ class EventBus:
     def publish(self, event_type: str, data: dict[str, Any]):
         msg = {
             "type": event_type,
-            "timestamp": datetime.now().isoformat(),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
             "data": data,
         }
         with self._lock:
@@ -86,7 +98,7 @@ class EventBus:
 class OrderStore:
     """Stores and persists portal orders across live sessions."""
 
-    def __init__(self, store_dir: Path = Path("out/portal_orders")):
+    def __init__(self, store_dir: Path = Path("out/portal")):
         self.store_dir = store_dir
         self.store_dir.mkdir(parents=True, exist_ok=True)
         self._orders: dict[str, dict[str, Any]] = {}
@@ -94,14 +106,23 @@ class OrderStore:
         self._load_from_disk()
 
     def _load_from_disk(self):
-        for f in sorted(self.store_dir.glob("*.json")):
-            try:
-                order = json.loads(f.read_text(encoding="utf-8"))
-                oid = order.get("id")
-                if oid:
-                    self._orders[oid] = order
-            except Exception as e:
-                log.warning("Could not load stored order %s: %s", f, e)
+        # Also migrate from out/portal_orders if present
+        legacy_dir = Path("out/portal_orders")
+        candidate_dirs = [self.store_dir]
+        if legacy_dir.is_dir() and legacy_dir != self.store_dir:
+            candidate_dirs.append(legacy_dir)
+
+        for sdir in candidate_dirs:
+            for f in sorted(sdir.glob("*.json")):
+                if f.name.startswith("blob_state"):
+                    continue
+                try:
+                    order = json.loads(f.read_text(encoding="utf-8"))
+                    oid = order.get("id")
+                    if oid and oid not in self._orders:
+                        self._orders[oid] = order
+                except Exception as e:
+                    log.warning("Could not load stored order %s: %s", f, e)
 
     def save_order(self, order: dict[str, Any]):
         oid = order.get("id")
@@ -121,16 +142,26 @@ class OrderStore:
         with self._lock:
             if target in self._orders:
                 return self._orders[target]
-            # Search by PO number
+            # Match by clean PO number or ID
             for o in self._orders.values():
                 if o.get("po") == target or o.get("id") == target:
                     return o
-        return None
+            return None
 
     def list_orders(self) -> list[dict[str, Any]]:
         with self._lock:
-            # Return live orders sorted with most recent at top
             return sorted(self._orders.values(), key=lambda x: x.get("received", ""), reverse=True)
+
+    def clear(self):
+        with self._lock:
+            self._orders.clear()
+            for f in self.store_dir.glob("*.json"):
+                if f.name.startswith("blob_state"):
+                    continue
+                try:
+                    f.unlink()
+                except Exception:
+                    pass
 
 
 # --------------------------------------------------------------------------
@@ -146,6 +177,7 @@ class LivePOService:
         salesforce_client: Optional[SalesforceClient] = None,
         inbox_dir: Path = Path("inbound_pos"),
         order_store: Optional[OrderStore] = None,
+        backfill_blob: bool = False,
     ):
         load_env_file()
         self.inbox_dir = inbox_dir
@@ -163,33 +195,28 @@ class LivePOService:
         else:
             self.pipeline = self._build_default_pipeline()
 
+        self.pacing_ms = int(os.environ.get("PORTAL_STAGE_PACING_MS", "450"))
         self._running = False
         self._threads: list[threading.Thread] = []
+        self._book_locks: set[str] = set()
+        self._book_lock_mutex = threading.Lock()
+        self.backfill_blob = backfill_blob
 
     def _build_default_pipeline(self) -> Pipeline:
-        from .validate.engine import load_engine
-        from .resolve.base import StubQuoteSource
         engine = load_engine("sos")
 
-        # Check for Snowflake Quote Source or Stub
-        quote_source = None
-        sf_acc = os.environ.get("SNOWFLAKE_ACCOUNT")
-        if sf_acc:
+        # Live Snowflake quote source or stub fallback
+        fallback_source = StubQuoteSource.from_json_file("my_quotes.json")
+        quote_source = fallback_source
+        sf_user = os.environ.get("SNOWFLAKE_USER", "").strip()
+        if sf_user:
             try:
-                from .resolve.snowflake import SnowflakeQuoteSource
-                quote_source = SnowflakeQuoteSource.from_env()
-                log.info("Connected to Snowflake CPQ Quote Source (%s)", sf_acc)
+                from .resolve.snowflake_live import SnowflakeConnectorQuoteSource, FallbackQuoteSource
+                live_source = SnowflakeConnectorQuoteSource.from_env()
+                quote_source = FallbackQuoteSource(live_source, fallback_source)
+                log.info("Configured live Snowflake quotes for user %s with fallback to my_quotes.json", sf_user)
             except Exception as e:
-                log.warning("Could not init Snowflake Quote Source: %s. Using stub quotes fallback.", e)
-
-        if quote_source is None:
-            # Load stub quotes from my_quotes.json if present
-            q_file = Path("my_quotes.json")
-            if q_file.exists():
-                from run_local import load_stub_quotes
-                quote_source = load_stub_quotes(q_file)
-            else:
-                quote_source = StubQuoteSource({})
+                log.warning("Could not init live Snowflake Quote Source: %s. Using stub quotes.", e)
 
         return Pipeline(source=None, engine=engine, quote_source=quote_source, salesforce=self.sf)
 
@@ -198,77 +225,134 @@ class LivePOService:
         self,
         doc_data: bytes,
         filename: str,
-        source_label: str = "Inbound",
+        source_label: str = "Live Inbound",
+        email_meta: Optional[dict] = None,
     ) -> dict[str, Any]:
-        """Ingests a PO document, broadcasts live stages, runs validation, and stores the order."""
-        stem = Path(filename).stem
-        log.info("Processing inbound document '%s' (%d bytes) from %s", filename, len(doc_data), source_label)
-
-        # Stage 1: Inbound Received
-        self.bus.publish("pipeline_stage", {
-            "stage": "received",
-            "message": f"📥 Inbound PO Received: {filename} via {source_label}",
-            "filename": filename,
-            "source": source_label,
-            "bytes": len(doc_data),
-        })
-        time.sleep(0.3)
-
-        # Save binary PDF locally for serving / SFDC attachment
-        pdf_path = self.ingested_pdf_dir / filename
+        """Ingests a PO document through the multi-stage validation engine."""
+        fname = safe_filename(filename)
+        pdf_path = self.ingested_pdf_dir / fname
         try:
             pdf_path.write_bytes(doc_data)
         except Exception as e:
-            log.warning("Could not cache PDF to %s: %s", pdf_path, e)
+            log.warning("Could not write ingested PDF to disk: %s", e)
 
-        # Stage 2: Extracting Fields
-        self.bus.publish("pipeline_stage", {
-            "stage": "extracting",
-            "message": f"⚙️ AI & Document Parser extracting header, 11 parties, line items & Inco terms...",
-            "filename": filename,
+        start_time = time.perf_counter()
+
+        # Stage 1: Received
+        from_hint = (email_meta or {}).get("from") or "Live PO Ingestion"
+        self.bus.publish("inbound_received", {
+            "stage": "received",
+            "filename": fname,
+            "source": source_label,
+            "size": len(doc_data),
+            "email_from": from_hint,
+            "message": f"📥 Inbound PO received: {fname} ({len(doc_data):,} bytes)",
         })
-        time.sleep(0.4)
+        if self.pacing_ms > 0:
+            time.sleep(self.pacing_ms / 1000.0)
 
-        # Stage 3: Resolving Quote
-        self.bus.publish("pipeline_stage", {
-            "stage": "reconciling",
-            "message": f"❄️ Snowflake CPQ reconciling quote pricing, billing account & opportunity...",
-            "filename": filename,
+        # Stage 2: Read PDF / Parse
+        t_parse_start = time.perf_counter()
+        meta = dict(email_meta or {})
+        meta["source_type"] = "portal_upload"
+        doc = Document(
+            source_id=str(pdf_path),
+            data=doc_data,
+            modified=datetime.now(timezone.utc),
+            metadata=meta,
+        )
+        parsed_po = self.pipeline.parse_document(doc)
+        parse_ms = int((time.perf_counter() - t_parse_start) * 1000)
+
+        po_num = parsed_po.po_number or "PO-DETECTING"
+        self.bus.publish("stage_read_pdf", {
+            "stage": "read_pdf",
+            "po": po_num,
+            "vendor": parsed_po.reseller_name or "Detected Vendor",
+            "lines_count": len(parsed_po.line_items),
+            "total": float(parsed_po.po_total or 0.0),
+            "layout": parsed_po.layout,
+            "latency_ms": parse_ms,
+            "message": f"📄 Parsed PDF: layout '{parsed_po.layout}' ({len(parsed_po.line_items)} lines, ${parsed_po.po_total or 0:,.2f})",
         })
+        if self.pacing_ms > 0:
+            time.sleep(self.pacing_ms / 1000.0)
 
-        # Run Document through Pipeline
-        doc = Document(source_id=str(pdf_path), data=doc_data)
-        validation_result = self.pipeline.process_document(doc)
+        # Stage 3: Quote Lookup
+        t_quote_start = time.perf_counter()
+        quote = self.pipeline.resolve_quote(parsed_po)
+        quote_ms = int((time.perf_counter() - t_quote_start) * 1000)
 
-        # Stage 4: Policy Validation (11-Item SOS Policy & Quote checks)
-        self.bus.publish("pipeline_stage", {
-            "stage": "validating",
-            "message": f"📋 Evaluated SOS Checklist (11 items) + F5 CPQ Quote Reconciliation...",
-            "filename": filename,
-            "outcome": validation_result.outcome.value,
+        self.bus.publish("stage_quote_lookup", {
+            "stage": "quote_lookup",
+            "po": po_num,
+            "quote": quote.quote_number,
+            "quote_found": quote.found,
+            "quote_source": getattr(quote, "source", "lookup"),
+            "opportunity": quote.opportunity_id or "Not Linked",
+            "latency_ms": quote_ms,
+            "message": f"🔍 Quote {quote.quote_number}: {'Found in ' + getattr(quote, 'source', 'Snowflake') if quote.found else 'Not Found'}",
         })
-        time.sleep(0.3)
+        if self.pacing_ms > 0:
+            time.sleep(self.pacing_ms / 1000.0)
+
+        # Stage 4: Run Checklist & Policy Engine
+        t_rules_start = time.perf_counter()
+        validation_result = self.pipeline.run_checks(parsed_po, quote)
+        rules_ms = int((time.perf_counter() - t_rules_start) * 1000)
+        total_ms = int((time.perf_counter() - start_time) * 1000)
 
         # Convert to Portal Order structure
         order = result_to_portal_order(
             validation_result,
             doc_data=doc_data,
-            doc_filename=filename,
+            doc_filename=fname,
             source_tag=source_label,
         )
         order["pdf_path"] = str(pdf_path)
+        order["latency_ms"] = total_ms
+        order["timings"] = {
+            "parse_ms": parse_ms,
+            "quote_ms": quote_ms,
+            "rules_ms": rules_ms,
+            "total_ms": total_ms,
+            "rules_evaluated": len(validation_result.findings),
+        }
+        order["metrics"] = order["timings"]
+        if email_meta:
+            order["email_metadata"] = email_meta
 
         # Save to Store
         self.store.save_order(order)
 
         # Stage 5: Ready for Review
+        flagged_count = order.get("flagged_count", 0)
+        if flagged_count == 0:
+            msg = f"✨ PO #{order['po']} passed all rules! Ready for 1-Click Salesforce Booking."
+        else:
+            msg = f"⚠️ PO #{order['po']} received ({flagged_count} item(s) need SOS review)."
+
         self.bus.publish("order_ready", {
             "stage": "ready",
-            "message": f"✨ PO #{order['po']} from {order['from']} ready for 1-Click Salesforce Booking!",
+            "message": msg,
             "order": order,
+            "total_ms": total_ms,
         })
 
         return order
+
+    def recheck(self, order_id: str) -> Optional[dict[str, Any]]:
+        """Re-runs validation for an existing order (useful if CPQ replication completed)."""
+        order = self.store.get_order(order_id)
+        if not order:
+            return None
+        pdf_path = order.get("pdf_path")
+        if not pdf_path or not os.path.exists(pdf_path):
+            return None
+        data = Path(pdf_path).read_bytes()
+        filename = order.get("file") or Path(pdf_path).name
+        meta = order.get("email_metadata")
+        return self.process_document(data, filename, source_label="Re-Checked", email_meta=meta)
 
     # ------------------------------------------------------- Salesforce Booking
     def book_order_to_salesforce(
@@ -276,88 +360,86 @@ class LivePOService:
         order_id: str,
         approver_name: str = "SOS Specialist",
         audit_note: str = "",
+        reviewer_edits: Optional[dict] = None,
+        acknowledged_flags: Optional[list[str]] = None,
     ) -> dict[str, Any]:
         """Creates the Booking_Form__c in Salesforce sandbox AND attaches the PO PDF via ContentVersion."""
-        order = self.store.get_order(order_id)
-        if not order:
-            return {"success": False, "error": f"Order '{order_id}' not found in store."}
+        with self._book_lock_mutex:
+            if order_id in self._book_locks:
+                return {"success": False, "error": f"Booking already in progress for order {order_id}."}
+            self._book_locks.add(order_id)
 
-        po_num = order.get("po", "UNKNOWN")
-        log.info("Booking order %s (PO #%s) to Salesforce...", order_id, po_num)
+        try:
+            order = self.store.get_order(order_id)
+            if not order:
+                return {"success": False, "error": f"Order '{order_id}' not found in store."}
 
-        # Prepare payload
-        payload = dict(order.get("salesforce_payload") or {})
-        if not payload:
-            payload = {
-                "Opportunity__c": order.get("opportunity"),
-                "PO__c": po_num,
-                "Total_Amount__c": (order.get("booking") or {}).get("amount", 0.0),
-                "Sales_Order_Type__c": (order.get("booking") or {}).get("orderType", "Standard"),
-            }
+            po_num = order.get("po", "UNKNOWN")
+            log.info("Booking order %s (PO #%s) to Salesforce (approver: %s)...", order_id, po_num, approver_name)
 
-        # Notes
-        notes = list(order.get("notes") or [])
-        if audit_note:
-            notes.append({"title": f"Note to RO: SOS Approver Sign-off ({approver_name})", "body": audit_note})
+            # Load PDF bytes
+            pdf_data = None
+            pdf_path_str = order.get("pdf_path")
+            if pdf_path_str and os.path.exists(pdf_path_str):
+                try:
+                    pdf_data = Path(pdf_path_str).read_bytes()
+                except Exception as pe:
+                    log.warning("Could not read cached PDF from %s: %s", pdf_path_str, pe)
+            elif order.get("pdf_b64"):
+                try:
+                    pdf_data = base64.b64decode(order["pdf_b64"])
+                except Exception as pe:
+                    log.warning("Could not decode base64 PDF: %s", pe)
 
-        # Load PDF bytes
-        pdf_data = None
-        pdf_path_str = order.get("pdf_path")
-        if pdf_path_str and os.path.exists(pdf_path_str):
-            try:
-                pdf_data = Path(pdf_path_str).read_bytes()
-            except Exception as pe:
-                log.warning("Could not read cached PDF from %s: %s", pdf_path_str, pe)
-        elif order.get("pdf_b64"):
-            try:
-                pdf_data = base64.b64decode(order["pdf_b64"])
-            except Exception as pe:
-                log.warning("Could not decode base64 PDF: %s", pe)
+            # Execute Booking Form Creation + PDF Attachment in Salesforce
+            sf_res = self.sf.book_portal_order(
+                order=order,
+                approver_name=approver_name,
+                reviewer_edits=reviewer_edits,
+                notes_to_ro=audit_note,
+                pdf_data=pdf_data,
+                acknowledged_flags=acknowledged_flags,
+            )
 
-        pdf_filename = order.get("file") or f"PO_{po_num}.pdf"
+            if sf_res.get("success"):
+                order["status"] = "booked"
+                order["booking_result"] = sf_res
+                order["salesforce_booking"] = sf_res
+                order["booked_at"] = datetime.now(timezone.utc).isoformat()
+                order["booked_by"] = approver_name
+                order["sfdc_record_id"] = sf_res.get("booking_form_id")
+                order["sfdc_record_url"] = sf_res.get("url")
+                order["sfdc_pdf_attached"] = sf_res.get("pdf_attached")
+                self.store.save_order(order)
 
-        # Execute Booking Form Creation + PDF Attachment in Salesforce
-        sf_res = self.sf.create_booking_form_from_payload(
-            payload=payload,
-            pdf_data=pdf_data,
-            pdf_filename=pdf_filename,
-            notes=notes,
-        )
+                # Broadcast update
+                self.bus.publish("order_booked", {
+                    "order_id": order_id,
+                    "po": po_num,
+                    "booking_form_id": sf_res.get("booking_form_id"),
+                    "url": sf_res.get("url"),
+                    "pdf_attached": sf_res.get("pdf_attached"),
+                    "approver": approver_name,
+                })
 
-        if sf_res.get("success"):
-            order["status"] = "booked"
-            order["booking_result"] = sf_res
-            order["booked_at"] = datetime.now().isoformat()
-            order["booked_by"] = approver_name
-            order["sfdc_record_id"] = sf_res.get("booking_form_id")
-            order["sfdc_record_url"] = sf_res.get("url")
-            order["sfdc_pdf_attached"] = sf_res.get("pdf_attached")
-            self.store.save_order(order)
-
-            # Broadcast update
-            self.bus.publish("order_booked", {
-                "order_id": order_id,
-                "po": po_num,
-                "booking_form_id": sf_res.get("booking_form_id"),
-                "url": sf_res.get("url"),
-                "pdf_attached": sf_res.get("pdf_attached"),
-            })
-
-            return {
-                "success": True,
-                "booking_form_id": sf_res.get("booking_form_id"),
-                "url": sf_res.get("url"),
-                "pdf_attached": sf_res.get("pdf_attached"),
-                "attachment": sf_res.get("pdf_attachment"),
-                "dry_run": sf_res.get("dry_run", self.sf.dry_run),
-                "order": order,
-            }
-        else:
-            return {
-                "success": False,
-                "error": sf_res.get("raw_response") or str(sf_res.get("errors")),
-                "details": sf_res,
-            }
+                return {
+                    "success": True,
+                    "booking_form_id": sf_res.get("booking_form_id"),
+                    "url": sf_res.get("url"),
+                    "pdf_attached": sf_res.get("pdf_attached"),
+                    "dry_run": sf_res.get("dry_run", self.sf.dry_run),
+                    "order": order,
+                    "details": sf_res,
+                }
+            else:
+                return {
+                    "success": False,
+                    "error": sf_res.get("error") or "Salesforce booking failed.",
+                    "details": sf_res,
+                }
+        finally:
+            with self._book_lock_mutex:
+                self._book_locks.discard(order_id)
 
     # ------------------------------------------------------- Background Watchers
     def _inbox_folder_worker(self):
@@ -380,60 +462,105 @@ class LivePOService:
             time.sleep(2.0)
 
     def _azure_blob_worker(self):
-        """Monitors Azure Blob Storage container if credentials are provided."""
-        conn_str = os.environ.get("AZURE_STORAGE_CONNECTION_STRING")
-        sas_token = os.environ.get("AZURE_STORAGE_SAS_TOKEN")
-        container = os.environ.get("AZURE_STORAGE_CONTAINER", "purchaseorders")
+        """Monitors Azure Blob Storage container for incoming POs."""
+        conn_str = os.environ.get("AZURE_STORAGE_CONNECTION_STRING", "")
+        sas_token = os.environ.get("AZURE_STORAGE_SAS_TOKEN", "")
 
-        if conn_str and ("AccountName=..." in conn_str or "..." in conn_str):
-            conn_str = None
-
-        if not (conn_str or sas_token):
-            log.info("ℹ️ Azure Blob credentials not configured; standing by (local inbound_pos/ poller active).")
+        # Skip if placeholder or unconfigured
+        if not conn_str and not sas_token:
+            log.info("ℹ️ Azure Blob Storage unconfigured. To enable live email intake, set AZURE_STORAGE_SAS_TOKEN or AZURE_STORAGE_CONNECTION_STRING in .env.")
+            return
+        if "AccountName=..." in conn_str or "..." in sas_token:
+            log.info("ℹ️ Azure Blob Storage contains template placeholders. Running local folder intake only.")
             return
 
-        from .ingest.blob import BlobSource, BlobWatcher
+        auth_method = "sas_token" if sas_token else "connection_string"
+        prefix = os.environ.get("AZURE_STORAGE_PREFIX", "inbox/")
+        poll_sec = float(os.environ.get("AZURE_POLL_SECONDS", "4.0"))
+
         try:
-            blob_source = BlobSource(container=container, auth="connection_string" if conn_str else "sas_token")
-            access = blob_source.check_access()
-            if not access.get("ok"):
-                log.warning("Azure Blob preflight failed: %s", access.get("detail"))
+            blob_source = BlobSource(auth=auth_method, prefix=prefix)
+            chk = blob_source.check_access()
+            if not chk.get("ok"):
+                log.warning("Azure Blob preflight failed: %s", chk.get("detail"))
                 return
 
-            log.info("☁️ Azure Blob Watcher active on container '%s'", container)
-
-            def handle_blob_result(result: ValidationResult, doc: Document):
-                order = result_to_portal_order(result, doc_data=doc.data, doc_filename=doc.source_id, source_tag="Azure Blob Storage")
-                self.store.save_order(order)
-                self.bus.publish("order_ready", {"order": order, "stage": "ready"})
-
-            def handle_blob_event(evt: dict):
-                self.bus.publish("pipeline_stage", evt)
+            def on_blob_pdf(name, data, meta):
+                self.process_document(
+                    doc_data=data,
+                    filename=os.path.basename(name),
+                    source_label="Azure Blob (Power Automate)",
+                    email_meta=meta,
+                )
 
             watcher = BlobWatcher(
                 blob_source=blob_source,
-                pipeline=self.pipeline,
-                poll_interval=4.0,
-                on_result=handle_blob_result,
-                on_event=handle_blob_event,
+                on_pdf=on_blob_pdf,
+                poll_interval=poll_sec,
+                backfill=self.backfill_blob,
             )
-            while self._running:
-                watcher.scan_once()
-                time.sleep(4.0)
+            log.info("☁️ Azure Blob Watcher active on '%s/%s' (polling every %.1fs)", blob_source.container, prefix, poll_sec)
+            watcher.baseline()
 
+            while self._running:
+                watcher.poll_once()
+                time.sleep(poll_sec)
         except Exception as exc:
-            log.warning("Azure Blob Watcher stopped: %s", exc)
+            log.warning("Azure Blob watcher error: %s", exc)
 
     def start_background_watchers(self):
+        """Starts background intake threads for local folder and Azure Blob."""
         self._running = True
-        t1 = threading.Thread(target=self._inbox_folder_worker, daemon=True, name="InboxWatcher")
-        t1.start()
-        self._threads.append(t1)
-
-        t2 = threading.Thread(target=self._azure_blob_worker, daemon=True, name="AzureBlobWatcher")
-        t2.start()
-        self._threads.append(t2)
-        log.info("🚀 Background Ingestion Watchers launched.")
+        t_folder = threading.Thread(target=self._inbox_folder_worker, daemon=True, name="InboxFolderWatcher")
+        t_blob = threading.Thread(target=self._azure_blob_worker, daemon=True, name="AzureBlobWatcher")
+        self._threads = [t_folder, t_blob]
+        for t in self._threads:
+            t.start()
 
     def stop_background_watchers(self):
         self._running = False
+
+    def preload(self, folder: Path | str) -> int:
+        """Preloads sample POs from a folder so the queue isn't empty."""
+        p = Path(folder)
+        if not p.is_dir():
+            return 0
+        loaded = 0
+        for pdf in sorted(p.glob("*.pdf")):
+            try:
+                data = pdf.read_bytes()
+                self.process_document(data, pdf.name, source_label="Preloaded Sample")
+                loaded += 1
+            except Exception as exc:
+                log.warning("Could not preload %s: %s", pdf, exc)
+        return loaded
+
+    def reset_portal_state(self):
+        """Clears all orders from store and disk for a fresh demo."""
+        self.store.clear()
+        state_file = Path("out/portal/blob_state.json")
+        if state_file.is_file():
+            try:
+                state_file.unlink()
+            except Exception:
+                pass
+
+    def system_status(self) -> dict[str, Any]:
+        """Provides status summary for preflight and portal dashboard."""
+        sf_pre = self.sf.preflight()
+        q_source = self.pipeline.quote_source
+        q_mode = getattr(q_source, "name", "unknown")
+
+        return {
+            "salesforce": sf_pre,
+            "quotes": {
+                "ok": True,
+                "mode": q_mode,
+                "detail": f"Quote engine active ({q_mode})",
+            },
+            "inbound_folder": {
+                "ok": True,
+                "path": str(self.inbox_dir),
+            },
+            "orders_count": len(self.store.list_orders()),
+        }

@@ -9,9 +9,12 @@ and the booking logic do not move.
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
+from decimal import Decimal
 import re
 from abc import ABC, abstractmethod
-from typing import Optional
+from typing import Optional, Union
 
 from ..models import Quote, QuoteLine
 
@@ -83,3 +86,42 @@ class StubQuoteSource(QuoteSource):
             **kw,
         )
         return cls({quote_number.upper(): q})
+
+    @classmethod
+    def from_json_file(cls, path: str | Path) -> "StubQuoteSource":
+        p = Path(path)
+        if not p.is_file():
+            return cls({})
+        try:
+            data = json.loads(p.read_text(encoding="utf-8"))
+        except Exception:
+            return cls({})
+        quotes = {}
+        items = data if isinstance(data, list) else data.get("quotes", [])
+        for item in items:
+            qnum = item.get("quote_number") or item.get("name")
+            if not qnum:
+                continue
+            lines = [
+                QuoteLine(
+                    part_number=l.get("part_number") or l.get("part") or "",
+                    description=l.get("description") or "",
+                    quantity=Decimal(str(l.get("quantity") or 0)),
+                    unit_price=Decimal(str(l.get("unit_price") or 0)),
+                    total_price=Decimal(str(l.get("total_price") or 0)),
+                )
+                for l in item.get("lines", [])
+            ]
+            q = Quote(
+                quote_number=qnum,
+                found=True,
+                opportunity_id=item.get("opportunity_id"),
+                account_name=item.get("account_name"),
+                end_user_name=item.get("end_user_name"),
+                reseller_name=item.get("reseller_name"),
+                currency=item.get("currency", "USD"),
+                status=item.get("status", "Bookable"),
+                lines=lines,
+            )
+            quotes[qnum.upper()] = q
+        return cls(quotes)
