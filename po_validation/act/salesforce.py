@@ -335,15 +335,26 @@ class SalesforceClient:
         return out
 
     # --------------------------------------------------------------- writes
-    def create_booking_form(self, result) -> dict:
+    def create_booking_form(self, result, pdf_data: Optional[bytes] = None, pdf_filename: Optional[str] = None) -> dict:
         """Constructs and commits a full Booking_Form__c record and its Notes to RO.
 
         In dry-run mode, validates the payload and returns the simulated audit record
-        without mutating the Salesforce sandbox.
+        without mutating the Salesforce sandbox. Also attaches the PO PDF to the record.
         """
         form = BookingFormBuilder.build(result)
         payload = form.to_salesforce_payload()
         notes = payload.pop("AttachedContentNotes", [])
+
+        # Auto-detect PDF data if not explicitly provided
+        if pdf_data is None and hasattr(result, "po") and getattr(result.po, "source_id", None):
+            src_id = result.po.source_id
+            if os.path.exists(src_id) and os.path.isfile(src_id):
+                try:
+                    with open(src_id, "rb") as f:
+                        pdf_data = f.read()
+                    pdf_filename = os.path.basename(src_id)
+                except Exception as ex:
+                    log.debug("Could not read PDF source file %s: %s", src_id, ex)
 
         if not form.opportunity_id:
             return {
@@ -359,17 +370,24 @@ class SalesforceClient:
 
         if self.dry_run:
             mock_id = f"a1sPOCLAB_MOCK_{form.po_number or 'DRAFT'}"
+            pdf_att = None
+            if pdf_data:
+                pdf_att = self.attach_pdf(mock_id, pdf_filename or f"PO_{form.po_number or 'order'}.pdf", pdf_data)
             return {
                 "attempted": False,
                 "dry_run": True,
                 "sandbox_instance": self.instance_url,
                 "reason": "dry_run=True; simulated Booking_Form__c payload generated safely for sandbox.",
                 "booking_form_name": form.booking_form_name,
+                "booking_form_id": mock_id,
                 "amount": float(form.amount),
                 "order_type": form.sales_order_type,
                 "notes_count": len(form.notes),
                 "payload": payload,
+                "url": f"{self.instance_url}/lightning/r/Booking_Form__c/{mock_id}/view",
                 "simulated_url": f"{self.instance_url}/lightning/r/Booking_Form__c/{mock_id}/view",
+                "pdf_attached": bool(pdf_att and pdf_att.get("success")),
+                "pdf_attachment": pdf_att,
             }
 
         # Introspect schema and send only fields that exist and are createable in this sandbox
@@ -476,6 +494,12 @@ class SalesforceClient:
                 except Exception as exc:
                     log.warning("Could not attach ContentNote '%s': %s", note.title, exc)
 
+            # Attach PDF if available
+            pdf_att_result = None
+            if not self.dry_run and rec_id and pdf_data:
+                clean_fname = pdf_filename or f"PO_{form.po_number or 'order'}.pdf"
+                pdf_att_result = self.attach_pdf(rec_id, clean_fname, pdf_data)
+
             return {
                 "attempted": True,
                 "success": True,
@@ -483,6 +507,8 @@ class SalesforceClient:
                 "booking_form_id": rec_id,
                 "url": f"{self.instance_url}/lightning/r/Booking_Form__c/{rec_id}/view",
                 "notes_attached": notes_created,
+                "pdf_attached": bool(pdf_att_result and pdf_att_result.get("success")),
+                "pdf_attachment": pdf_att_result,
                 "dropped_fields": dropped_fields,
                 "payload": payload,
                 "written_payload": clean_payload,
@@ -500,6 +526,193 @@ class SalesforceClient:
             "payload": payload,
             "written_payload": clean_payload,
             "raw_response": r.text,
+        }
+
+    def attach_pdf(self, record_id: str, filename: str, data: bytes, title: Optional[str] = None) -> dict:
+        """Attaches a PDF document directly to a Salesforce record via ContentVersion."""
+        if self.dry_run:
+            sim_id = f"068POCLAB_{abs(hash(filename)) % 1000000:06d}"
+            return {
+                "success": True,
+                "dry_run": True,
+                "content_version_id": sim_id,
+                "filename": filename,
+                "size_bytes": len(data) if data else 0,
+            }
+
+        if not data:
+            return {"success": False, "error": "No PDF data bytes provided for attachment."}
+
+        clean_name = os.path.basename(filename)
+        if not clean_name.lower().endswith(".pdf"):
+            clean_name += ".pdf"
+        doc_title = title or clean_name.replace(".pdf", "")
+
+        try:
+            b64_content = base64.b64encode(data).decode("utf-8")
+            cv_payload = {
+                "Title": doc_title,
+                "PathOnClient": clean_name,
+                "VersionData": b64_content,
+                "FirstPublishLocationId": record_id,
+            }
+            resp = _http_request(
+                "POST",
+                self._url("sobjects/ContentVersion/"),
+                headers=self.headers,
+                json_data=cv_payload,
+                timeout=60,
+            )
+            if resp.status_code == 201:
+                cv_id = resp.json().get("id")
+                log.info("Successfully attached PO PDF '%s' to %s (ContentVersion %s)", clean_name, record_id, cv_id)
+                return {
+                    "success": True,
+                    "content_version_id": cv_id,
+                    "filename": clean_name,
+                    "size_bytes": len(data),
+                    "status_code": 201,
+                }
+            else:
+                log.warning("Could not attach PDF '%s' to %s (%d): %s", clean_name, record_id, resp.status_code, resp.text)
+                return {
+                    "success": False,
+                    "status_code": resp.status_code,
+                    "error": resp.text,
+                }
+        except Exception as exc:
+            log.error("Exception attaching PDF '%s' to %s: %s", clean_name, record_id, exc)
+            return {"success": False, "error": str(exc)}
+
+    def create_booking_form_from_payload(
+        self,
+        payload: dict,
+        pdf_data: Optional[bytes] = None,
+        pdf_filename: Optional[str] = None,
+        notes: Optional[list[dict]] = None,
+    ) -> dict:
+        """Commits a pre-computed Booking Form payload directly to Salesforce."""
+        clean_copy = dict(payload)
+        po_num = clean_copy.get("PO__c") or clean_copy.get("Searchable_PO_Field__c") or "DRAFT"
+        opp_id = clean_copy.get("Opportunity__c")
+
+        if self.dry_run:
+            mock_id = f"a1sPOCLAB_MOCK_{po_num}"
+            pdf_att = None
+            if pdf_data:
+                pdf_att = self.attach_pdf(mock_id, pdf_filename or f"PO_{po_num}.pdf", pdf_data)
+            return {
+                "attempted": True,
+                "dry_run": True,
+                "success": True,
+                "booking_form_id": mock_id,
+                "url": f"{self.instance_url}/lightning/r/Booking_Form__c/{mock_id}/view",
+                "pdf_attached": bool(pdf_att and pdf_att.get("success")),
+                "pdf_attachment": pdf_att,
+            }
+
+        # Live Salesforce write
+        # Check createable/updateable fields
+        try:
+            d = self.describe("Booking_Form__c")
+            valid_createable = {f["name"] for f in d.get("fields", []) if f.get("createable", False)}
+            valid_updateable = {f["name"] for f in d.get("fields", []) if f.get("updateable", False)}
+            clean_payload = {k: v for k, v in clean_copy.items() if k in valid_createable and v is not None}
+        except Exception:
+            clean_payload = {k: v for k, v in clean_copy.items() if v is not None and not k.startswith("_")}
+            valid_updateable = set(clean_payload.keys())
+
+        # Idempotency check
+        if opp_id and po_num:
+            try:
+                safe_po = str(po_num).replace("'", "\\'")
+                safe_opp = str(opp_id).replace("'", "\\'")
+                soql = (
+                    f"SELECT Id, Name, Stage__c FROM Booking_Form__c "
+                    f"WHERE Opportunity__c = '{safe_opp}' "
+                    f"  AND (PO__c = '{safe_po}' OR Searchable_PO_Field__c = '{safe_po}') "
+                    f"LIMIT 1"
+                )
+                existing = self.query(soql)
+                if existing:
+                    rec_id = existing[0].get("Id")
+                    patch_data = {k: v for k, v in clean_payload.items() if k in valid_updateable}
+                    upd_resp = _http_request(
+                        "PATCH",
+                        self._url(f"sobjects/Booking_Form__c/{rec_id}"),
+                        headers=self.headers,
+                        json_data=patch_data,
+                        timeout=30,
+                    )
+                    pdf_att = None
+                    if pdf_data:
+                        pdf_att = self.attach_pdf(rec_id, pdf_filename or f"PO_{po_num}.pdf", pdf_data)
+                    return {
+                        "attempted": True,
+                        "success": upd_resp.status_code in (200, 204),
+                        "status_code": upd_resp.status_code,
+                        "booking_form_id": rec_id,
+                        "idempotent_updated": True,
+                        "url": f"{self.instance_url}/lightning/r/Booking_Form__c/{rec_id}/view",
+                        "pdf_attached": bool(pdf_att and pdf_att.get("success")),
+                        "pdf_attachment": pdf_att,
+                    }
+            except Exception as e:
+                log.warning("Idempotency lookup failed: %s", e)
+
+        resp = _http_request(
+            "POST",
+            self._url("sobjects/Booking_Form__c/"),
+            headers=self.headers,
+            json_data=clean_payload,
+            timeout=30,
+        )
+        body = _safe_json(resp)
+        if resp.status_code == 201:
+            rec_id = body.get("id")
+            # Attach ContentNotes if supplied
+            if notes:
+                for note in notes:
+                    try:
+                        n_title = note.get("title") or "Note to RO"
+                        n_body = note.get("body") or ""
+                        b64 = base64.b64encode(n_body.encode("utf-8")).decode("utf-8")
+                        nr = _http_request("POST", self._url("sobjects/ContentNote/"),
+                                           headers=self.headers, json_data={"Title": n_title, "Content": b64})
+                        if nr.status_code == 201:
+                            nid = nr.json().get("id")
+                            _http_request("POST", self._url("sobjects/ContentDocumentLink/"),
+                                          headers=self.headers, json_data={
+                                              "ContentDocumentId": nid,
+                                              "LinkedEntityId": rec_id,
+                                              "ShareType": "V",
+                                              "Visibility": "AllUsers",
+                                          })
+                    except Exception as ne:
+                        log.warning("Could not attach note: %s", ne)
+
+            # Attach PO PDF
+            pdf_att = None
+            if pdf_data:
+                pdf_att = self.attach_pdf(rec_id, pdf_filename or f"PO_{po_num}.pdf", pdf_data)
+
+            return {
+                "attempted": True,
+                "success": True,
+                "status_code": 201,
+                "booking_form_id": rec_id,
+                "url": f"{self.instance_url}/lightning/r/Booking_Form__c/{rec_id}/view",
+                "pdf_attached": bool(pdf_att and pdf_att.get("success")),
+                "pdf_attachment": pdf_att,
+            }
+
+        errors = body if isinstance(body, list) else [body]
+        return {
+            "attempted": True,
+            "success": False,
+            "status_code": resp.status_code,
+            "errors": errors,
+            "raw_response": resp.text,
         }
 
 

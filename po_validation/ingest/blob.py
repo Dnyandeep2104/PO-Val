@@ -26,6 +26,7 @@ unaffected by the choice.
 from __future__ import annotations
 
 import logging
+import os
 from datetime import datetime, timezone
 from typing import Iterator, Optional
 
@@ -78,15 +79,24 @@ class BlobSource(DocumentSource):
                                     ManagedIdentityCredential,
                                     ClientSecretCredential)
 
+        # 0. Check connection string
+        conn_str = self._secret("connection_string") or os.environ.get("AZURE_STORAGE_CONNECTION_STRING")
+        if conn_str and ("AccountName=..." in conn_str or "..." in conn_str):
+            conn_str = None
+        if conn_str or self.auth == "connection_string":
+            if not conn_str:
+                raise RuntimeError("connection_string auth selected but no valid connection string found.")
+            return conn_str
+
         if self.auth == "managed_identity":
             client_id = self.auth_kwargs.get("managed_identity_client_id")
             return (ManagedIdentityCredential(client_id=client_id)
                     if client_id else ManagedIdentityCredential())
 
         if self.auth == "service_principal":
-            tenant = self._secret("po-blob-tenant-id")
-            client = self._secret("po-blob-client-id")
-            secret = self._secret("po-blob-client-secret")
+            tenant = self._secret("po-blob-tenant-id") or os.environ.get("AZURE_TENANT_ID")
+            client = self._secret("po-blob-client-id") or os.environ.get("AZURE_CLIENT_ID")
+            secret = self._secret("po-blob-client-secret") or os.environ.get("AZURE_CLIENT_SECRET")
             missing = [n for n, v in
                        (("tenant", tenant), ("client id", client), ("secret", secret))
                        if not v]
@@ -97,14 +107,14 @@ class BlobSource(DocumentSource):
                     f"explicitly.")
             return ClientSecretCredential(tenant, client, secret)
 
-        if self.auth == "sas_token":
-            sas = self._secret("po-blob-sas-token")
+        if self.auth == "sas_token" or os.environ.get("AZURE_STORAGE_SAS_TOKEN"):
+            sas = self._secret("po-blob-sas-token") or os.environ.get("AZURE_STORAGE_SAS_TOKEN")
             if not sas:
                 raise RuntimeError("sas_token auth selected but no SAS token found.")
             return sas.lstrip("?")
 
-        if self.auth == "account_key":
-            key = self._secret("po-blob-account-key")
+        if self.auth == "account_key" or os.environ.get("AZURE_STORAGE_KEY"):
+            key = self._secret("po-blob-account-key") or os.environ.get("AZURE_STORAGE_KEY")
             if not key:
                 raise RuntimeError("account_key auth selected but no key found.")
             return key
@@ -118,8 +128,14 @@ class BlobSource(DocumentSource):
     def client(self):
         if self._client is None:
             from azure.storage.blob import BlobServiceClient
-            svc = BlobServiceClient(account_url=self.account_url,
-                                    credential=self._credential())
+            conn_str = self._secret("connection_string") or os.environ.get("AZURE_STORAGE_CONNECTION_STRING")
+            if conn_str and ("AccountName=..." in conn_str or "..." in conn_str):
+                conn_str = None
+            if conn_str:
+                svc = BlobServiceClient.from_connection_string(conn_str)
+            else:
+                svc = BlobServiceClient(account_url=self.account_url,
+                                        credential=self._credential())
             self._client = svc.get_container_client(self.container)
         return self._client
 
@@ -138,9 +154,7 @@ class BlobSource(DocumentSource):
         except Exception as exc:
             report["detail"] = (
                 f"{type(exc).__name__}: {exc}\n"
-                f"Most likely: the cluster identity has no role assignment on "
-                f"this storage account. Needed: 'Storage Blob Data Reader' on "
-                f"{self.account_url.split('//')[-1].split('.')[0]}."
+                f"Most likely: no valid credentials in environment or cluster identity has no role assignment."
             )
         return report
 
@@ -163,17 +177,70 @@ class BlobSource(DocumentSource):
             )
 
     def archive(self, source_id: str, destination_container: str) -> None:
-        """Move a processed PO out of the landing container.
-
-        Optional: the hash ledger already prevents reprocessing. Useful
-        anyway to keep the landing container small and to give ops a
-        visual sense of what is outstanding.
-        """
+        """Move a processed PO out of the landing container."""
         src = f"{self.account_url}/{self.container}/{source_id}"
-        dest = self.client._get_container_client if False else None  # noqa
         from azure.storage.blob import BlobServiceClient
-        svc = BlobServiceClient(account_url=self.account_url,
-                                credential=self._credential())
+        conn_str = self._secret("connection_string") or os.environ.get("AZURE_STORAGE_CONNECTION_STRING")
+        if conn_str:
+            svc = BlobServiceClient.from_connection_string(conn_str)
+        else:
+            svc = BlobServiceClient(account_url=self.account_url,
+                                    credential=self._credential())
         target = svc.get_container_client(destination_container)
         target.get_blob_client(source_id).start_copy_from_url(src)
         self.client.delete_blob(source_id)
+
+
+class BlobWatcher:
+    """Continuously monitors an Azure Blob container for new incoming PO PDFs."""
+
+    def __init__(
+        self,
+        blob_source: BlobSource,
+        pipeline,
+        poll_interval: float = 4.0,
+        on_result=None,
+        on_event=None,
+    ):
+        self.blob_source = blob_source
+        self.pipeline = pipeline
+        self.poll_interval = poll_interval
+        self.on_result = on_result
+        self.on_event = on_event
+        self._running = False
+
+    def scan_once(self) -> list:
+        results = []
+        try:
+            for doc in self.blob_source.list_documents():
+                if self.pipeline.ledger.seen(doc.content_hash):
+                    continue
+                if self.on_event:
+                    self.on_event({
+                        "event": "inbound_received",
+                        "source": "azure_blob",
+                        "filename": doc.source_id,
+                        "size": len(doc.data),
+                    })
+                log.info("📥 Ingesting PO from Azure Blob: %s (%d bytes)", doc.source_id, len(doc.data))
+                res = self.pipeline.process_document(doc)
+                results.append(res)
+                if self.on_result:
+                    try:
+                        self.on_result(res, doc)
+                    except Exception as e:
+                        log.error("on_result error for %s: %s", doc.source_id, e)
+        except Exception as exc:
+            log.warning("BlobWatcher scan error: %s", exc)
+        return results
+
+    def start(self):
+        import time
+        self._running = True
+        log.info("🚀 Azure Blob Watcher started (polling every %.1fs)...", self.poll_interval)
+        while self._running:
+            self.scan_once()
+            time.sleep(self.poll_interval)
+
+    def stop(self):
+        self._running = False
