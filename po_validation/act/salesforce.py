@@ -88,9 +88,10 @@ class _HttpResponse:
 def _get_ssl_context() -> ssl.SSLContext:
     if os.environ.get("USE_OS_TRUSTSTORE", "").lower() in ("true", "1", "yes"):
         try:
-            import truststore
+            import importlib
+            truststore = importlib.import_module("truststore")
             return truststore.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-        except ImportError:
+        except (ImportError, AttributeError):
             log.warning("USE_OS_TRUSTSTORE set but truststore not installed; falling back.")
 
     cafile = (
@@ -100,6 +101,11 @@ def _get_ssl_context() -> ssl.SSLContext:
     )
     if cafile and os.path.exists(cafile):
         return ssl.create_default_context(cafile=cafile)
+    try:
+        import certifi
+        return ssl.create_default_context(cafile=certifi.where())
+    except ImportError:
+        pass
     return ssl.create_default_context()
 
 
