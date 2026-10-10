@@ -614,16 +614,20 @@ class SOSPortalHandler(http.server.SimpleHTTPRequestHandler):
             edits = body_json.get("reviewer_edits")
             flags = body_json.get("acknowledged_flags")
 
-            if self.service and self.service.store.get_order(target):
-                result = self.service.book_order_to_salesforce(
-                    target,
-                    approver_name=approver,
-                    audit_note=note,
-                    reviewer_edits=edits,
-                    acknowledged_flags=flags,
-                )
-            else:
-                result = self.manager.approve_order(target, approver_name=approver, notes=note)
+            try:
+                if self.service and self.service.store.get_order(target):
+                    result = self.service.book_order_to_salesforce(
+                        target,
+                        approver_name=approver,
+                        audit_note=note,
+                        reviewer_edits=edits,
+                        acknowledged_flags=flags,
+                    )
+                else:
+                    result = self.manager.approve_order(target, approver_name=approver, notes=note)
+            except Exception as exc:
+                log.error("Booking error: %s", exc, exc_info=True)
+                result = {"success": False, "error": f"Salesforce booking error: {str(exc)}"}
 
             resp = json.dumps(result).encode("utf-8")
             self.send_response(200 if result.get("success") else 400)

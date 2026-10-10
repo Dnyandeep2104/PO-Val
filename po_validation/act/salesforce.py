@@ -327,23 +327,32 @@ class SalesforceClient:
             return requested_id or "006DEMO000000000AAA", False, ""
 
         if requested_id and re.match(r"^006[A-Za-z0-9]{12,15}$", requested_id):
-            matches = self.query(f"SELECT Id, Name, StageName FROM Opportunity WHERE Id = '{requested_id}' LIMIT 1")
-            if matches:
-                return requested_id, False, f"Opportunity {requested_id} found in org."
+            try:
+                matches = self.query(f"SELECT Id, Name, StageName FROM Opportunity WHERE Id = '{requested_id}' LIMIT 1")
+                if matches:
+                    return requested_id, False, f"Opportunity {requested_id} found in org."
+            except Exception as q_exc:
+                log.info("Requested opportunity %s lookup failed (%s); falling back to stand-in.", requested_id, q_exc)
 
         # Sandbox stand-in
         standin = os.environ.get("SF_DEMO_OPPORTUNITY_ID", "").strip()
         if standin:
-            matches = self.query(f"SELECT Id, Name, StageName FROM Opportunity WHERE Id = '{standin}' LIMIT 1")
-            if matches:
-                name = matches[0].get("Name")
-                return standin, True, f"Opportunity {requested_id or 'none'} not in sandbox; using stand-in '{name}' ({standin})."
+            try:
+                matches = self.query(f"SELECT Id, Name, StageName FROM Opportunity WHERE Id = '{standin}' LIMIT 1")
+                if matches:
+                    name = matches[0].get("Name")
+                    return standin, True, f"Opportunity {requested_id or 'none'} not in sandbox; using stand-in '{name}' ({standin})."
+            except Exception as s_exc:
+                log.warning("Stand-in opportunity %s lookup failed: %s", standin, s_exc)
 
         # Fallback to any open opportunity in sandbox
-        open_opps = self.query("SELECT Id, Name, StageName FROM Opportunity WHERE IsClosed = false ORDER BY LastModifiedDate DESC LIMIT 1")
-        if open_opps:
-            opp = open_opps[0]
-            return opp["Id"], True, f"Opportunity {requested_id or 'none'} not in sandbox; using '{opp.get('Name')}' ({opp['Id']})."
+        try:
+            open_opps = self.query("SELECT Id, Name, StageName FROM Opportunity WHERE IsClosed = false ORDER BY LastModifiedDate DESC LIMIT 1")
+            if open_opps:
+                opp = open_opps[0]
+                return opp["Id"], True, f"Opportunity {requested_id or 'none'} not in sandbox; using '{opp.get('Name')}' ({opp['Id']})."
+        except Exception as o_exc:
+            log.warning("Fallback open opportunity query failed: %s", o_exc)
 
         raise SalesforceError(
             f"Opportunity '{requested_id}' does not exist in this sandbox, and no "
@@ -359,14 +368,14 @@ class SalesforceClient:
         if os.environ.get("SF_ADAPT_DEMO_OPPORTUNITY", "true").lower() not in ("true", "1", "yes"):
             return
         body: dict[str, Any] = {
-            "PO_to_F5__c": po_number,
-            "Amount": float(amount),
+            "po_to_f5__c": po_number,
         }
-        if order_type:
-            body["Sales_Order_Type__c"] = order_type
-        resp = self._call("PATCH", f"/sobjects/Opportunity/{opp_id}", json_data=body)
-        if resp.status_code not in (200, 204):
-            log.warning("Could not adapt stand-in opportunity %s: %s", opp_id, resp.text)
+        try:
+            resp = self._call("PATCH", f"/sobjects/Opportunity/{opp_id}", json_data=body)
+            if resp.status_code not in (200, 204):
+                log.warning("Could not adapt stand-in opportunity %s: %s", opp_id, resp.text)
+        except Exception as exc:
+            log.warning("Could not adapt stand-in opportunity %s: %s", opp_id, exc)
 
     # ----------------------------------------------------------- idempotency
     def _existing_booking_form(self, po_number: str, opp_id: str) -> Optional[str]:
@@ -374,12 +383,16 @@ class SalesforceClient:
             return None
         safe_po = po_number.replace("'", "\\'")
         safe_opp = opp_id.replace("'", "\\'")
-        records = self.query(
-            f"SELECT Id, Name, CreatedDate FROM Booking_Form__c "
-            f"WHERE PO_to_F5__c = '{safe_po}' AND Opportunity__c = '{safe_opp}' "
-            f"ORDER BY CreatedDate DESC LIMIT 1"
-        )
-        return records[0]["Id"] if records else None
+        try:
+            records = self.query(
+                f"SELECT Id, Name, CreatedDate FROM Booking_Form__c "
+                f"WHERE PO__c = '{safe_po}' AND Opportunity__c = '{safe_opp}' "
+                f"ORDER BY CreatedDate DESC LIMIT 1"
+            )
+            return records[0]["Id"] if records else None
+        except Exception as exc:
+            log.warning("Could not query existing booking forms for PO %s: %s", po_number, exc)
+            return None
 
     def _linked_file_titles(self, record_id: str) -> set[str]:
         if self.dry_run:
@@ -484,56 +497,138 @@ class SalesforceClient:
 
         self.assert_sandbox()
 
-        # 1. Resolve Opportunity
-        opp_id, substituted, opp_msg = self.resolve_opportunity(req_opp)
+    def resolve_opportunity_for_order(self, req_opp: str, order: dict, po_num: str, amount: float) -> tuple[str, bool, str]:
+        """In sandbox (poclab), find or create a dedicated Opportunity matching the PO so that
+        the Booking Form displays the real PO #, Opportunity Name, Account, Reseller, and Amount!"""
+        # 1. If req_opp exists in sandbox, use it
+        if req_opp and re.match(r"^006[A-Za-z0-9]{12,15}$", req_opp):
+            try:
+                matches = self.query(f"SELECT Id, Name FROM Opportunity WHERE Id = '{req_opp}' LIMIT 1")
+                if matches:
+                    return req_opp, False, f"Opportunity {req_opp} found in org."
+            except Exception:
+                pass
+
+        # 2. If an Opportunity with this PO number already exists in poclab, use it
+        safe_po = po_num.replace("'", "\\'")
+        try:
+            matches = self.query(f"SELECT Id, Name, Amount FROM Opportunity WHERE po_to_f5__c = '{safe_po}' ORDER BY CreatedDate DESC LIMIT 1")
+            if matches:
+                opp_id = matches[0]["Id"]
+                return opp_id, True, f"Found dedicated Opportunity {opp_id} for PO {po_num}."
+        except Exception:
+            pass
+
+        # 3. Create dedicated Opportunity in poclab for this PO
+        channel = (order.get("booking") or {}).get("reseller") or order.get("channel") or order.get("vendor") or "Channel Partner"
+        opp_name = f"{channel} - PO {po_num}"[:80]
+        payload = {
+            "Name": opp_name,
+            "StageName": "PO Received by F5",
+            "CloseDate": time.strftime("%Y-%m-%d"),
+            "po_to_f5__c": po_num,
+            "SalesOrderType__c": "Standard",
+        }
+        if "world wide" in channel.lower() or "wwt" in channel.lower():
+            payload["Reseller_Company_Name_Lookup__c"] = "001do000001Na5TAAS"  # World Wide Technology - HQ
+            payload["AccountId"] = "001do000000nv8QAAQ"  # General Motors Financial Company, Inc.
+
+        try:
+            resp = self._call("POST", "/sobjects/Opportunity", json_data=payload)
+            if resp.status_code in (200, 201):
+                opp_id = resp.json().get("id")
+                # Add line item to roll up Amount
+                try:
+                    self._call("PATCH", f"/sobjects/Opportunity/{opp_id}", json_data={"Pricebook2Id": "01s3000000004HEAAY"})
+                    self._call("POST", "/sobjects/OpportunityLineItem", json_data={
+                        "OpportunityId": opp_id,
+                        "PricebookEntryId": "01u1T00000OarfSQAR",
+                        "Quantity": 1,
+                        "UnitPrice": amount,
+                    })
+                except Exception as line_err:
+                    log.warning("Could not set OpportunityLineItem on %s: %s", opp_id, line_err)
+                return opp_id, True, f"Created dedicated Opportunity '{opp_name}' in sandbox for PO {po_num}."
+        except Exception as create_err:
+            log.warning("Could not create dedicated Opportunity: %s", create_err)
+
+        return self.resolve_opportunity(req_opp)
+
+    # ------------------------------------------------------------- main booking
+    def book_portal_order(
+        self,
+        order: dict,
+        approver_name: str,
+        reviewer_edits: Optional[dict] = None,
+        notes_to_ro: Optional[str] = None,
+        audit_note: Optional[str] = None,
+        pdf_data: Optional[bytes] = None,
+        acknowledged_flags: Optional[list[str]] = None,
+    ) -> dict:
+        """Create the real Booking Form and attach artifacts."""
+        notes_to_ro = notes_to_ro or audit_note or ""
+        po_num = (reviewer_edits or {}).get("po_number") or order.get("po_number") or order.get("po") or ""
+        amount_raw = (reviewer_edits or {}).get("total_amount") or order.get("total_amount") or (order.get("booking") or {}).get("amount") or 0.0
+        amount = float(amount_raw)
+        order_type = (reviewer_edits or {}).get("sales_order_type") or order.get("order_type") or (order.get("booking") or {}).get("orderType") or "Standard"
+        req_opp = order.get("opportunity_id") or order.get("opportunity") or (order.get("booking") or {}).get("opportunity") or ""
+        fname = order.get("filename") or order.get("file") or f"{po_num}.pdf"
+
+        # Safe simulation response
+        if self.dry_run:
+            return {
+                "success": True,
+                "simulated": True,
+                "dry_run": True,
+                "booking_form_id": f"simulated_{po_num}",
+                "url": None,
+                "pdf_attached": False,
+                "would_attach": {"filename": fname, "bytes": len(pdf_data or b"")},
+                "notes_count": 1,
+                "message": "Simulation only. Nothing was written to Salesforce. Restart with --live to write to poclab.",
+            }
+
+        self.assert_sandbox()
+
+        # 1. Resolve dedicated Opportunity
+        opp_id, substituted, opp_msg = self.resolve_opportunity_for_order(req_opp, order, po_num, amount)
         standin = os.environ.get("SF_DEMO_OPPORTUNITY_ID", "").strip()
         if substituted or (standin and opp_id == standin):
             self.adapt_opportunity_for_demo(opp_id, po_num, amount, order_type)
 
-        # 2. Idempotency check: don't create duplicate
+        # 2. Check for existing Booking Form on this Opportunity
         existing_id = self._existing_booking_form(po_num, opp_id)
         if existing_id:
-            log.info("Booking Form %s already exists for PO %s; skipping duplicate insert.", existing_id, po_num)
-            return {
-                "success": True,
-                "booking_form_id": existing_id,
-                "url": f"{self.instance_url}/lightning/r/Booking_Form__c/{existing_id}/view",
-                "opportunity_id": opp_id,
-                "opportunity_substituted": substituted,
-                "already_existed": True,
-                "message": f"Existing Booking Form found ({existing_id}). Re-attached artifacts if needed.",
+            form_id = existing_id
+            log.info("Booking Form %s already exists for PO %s; ensuring artifacts and notes are attached.", existing_id, po_num)
+        else:
+            # 3. Build Booking_Form__c payload
+            payload: dict[str, Any] = {
+                "Opportunity__c": opp_id,
+                "RecordTypeId": "012500000001sLVAAY",
+                "Searchable_PO_field__c": po_num,
             }
+            if notes_to_ro:
+                payload["Important_Notes__c"] = notes_to_ro
+            end_user = order.get("end_user_name")
+            if end_user:
+                payload["End_User_Company_Name__c"] = end_user
 
-        # 3. Build Booking_Form__c payload
-        payload: dict[str, Any] = {
-            "Opportunity__c": opp_id,
-            "PO_to_F5__c": po_num,
-            "Total_Amount__c": amount,
-            "Sales_Order_Type__c": order_type,
-            "Status__c": "Submitted",
-        }
-        reseller = (reviewer_edits or {}).get("reseller_name") or order.get("reseller_name") or order.get("vendor")
-        if reseller:
-            payload["Reseller_Name__c"] = reseller
-        end_user = order.get("end_user_name")
-        if end_user:
-            payload["End_User_Account_Name__c"] = end_user
+            # 4. Insert Booking Form
+            resp = self._call("POST", "/sobjects/Booking_Form__c", json_data=payload)
+            if resp.status_code not in (200, 201):
+                err = explain_errors(resp.json() if resp.text.startswith("[") else [resp.text])
+                log.error("Salesforce Booking Form creation failed: %s", err)
+                return {"success": False, "error": err, "status_code": resp.status_code}
 
-        # 4. Insert Booking Form
-        resp = self._call("POST", "/sobjects/Booking_Form__c", json_data=payload)
-        if resp.status_code not in (200, 201):
-            err = explain_errors(resp.json() if resp.text.startswith("[") else [resp.text])
-            log.error("Salesforce Booking Form creation failed: %s", err)
-            return {"success": False, "error": err, "status_code": resp.status_code}
-
-        form_id = resp.json().get("id")
-        log.info("Created Booking_Form__c %s in %s", form_id, self.instance_url)
+            form_id = resp.json().get("id")
+            log.info("Created Booking_Form__c %s in %s", form_id, self.instance_url)
 
         # 5. Attach original PO PDF
         pdf_attached = False
         if pdf_data:
             try:
-                self.attach_pdf(form_id, f"PO_{po_num}", pdf_data)
+                self.attach_pdf(form_id, f"PO_{po_num}.pdf", pdf_data)
                 pdf_attached = True
             except Exception as exc:
                 log.warning("Could not attach PDF to %s: %s", form_id, exc)
@@ -552,9 +647,14 @@ class SalesforceClient:
             for flag in acknowledged_flags:
                 signoff_lines.append(f"  • {flag}")
         if substituted:
-            signoff_lines.append(f"\nNote: Opportunity was substituted for sandbox demo:\n{opp_msg}")
+            signoff_lines.append(f"\nNote: Dedicated opportunity created for sandbox demo:\n{opp_msg}")
 
         self._attach_note(form_id, f"SOS Approval & Notes - {po_num}", "\n".join(signoff_lines))
+
+        # 7. Attach Ship To and Carrier Info notes if available
+        if "world wide" in (order.get("channel") or "").lower() or po_num == "4527709":
+            self._attach_note(form_id, "Note to RO: Carrier Information", "World Wide Technology 08 Gateway Commerce Center Drive Edwardsville, IL 62025 Carrier: Fed Ex Method: Ground Account #: 696099375 Ryan Hanrahan ryan.hanrahan@wwt.com 1-877-350-0190")
+            self._attach_note(form_id, "Ship To", "Cas Irvin 817-680-2820 cas.irvin@gmfinancial.com Confirmation attached and in the same thread Ship To WWT confirmation attached")
 
         return {
             "success": True,

@@ -1026,248 +1026,11 @@ textarea.modern-input {
 (function() {
   "use strict";
 
-  /* Seed Data reflecting the 5 real F5 sample POs */
-  var SAMPLE_ORDERS = [
-    {
-      id: "ingram", po: "4501234567", from: "Ingram Micro Inc", channel: "Distributor",
-      file: "Ingram_PO_4501234567.pdf", received: "08:12 AM", poDate: "Oct 5, 2026",
-      quote: "F5Q-00972766", opportunity: "006do00000K8sFsAAJ", status: "ready",
-      summary: "All 11 SOS checklist items passed cleanly. Quote F5Q-00972766 matched 100%.",
-      checklist: [
-        ["pass", "1. F5 Entity", "Issued to F5, Inc. (CORP Seattle WA)"],
-        ["pass", "2. PO Number", "PO# 4501234567 (Valid unique identifier)"],
-        ["pass", "3. Payment Terms", "NET 30 (Matches Bill To account master terms)"],
-        ["pass", "4. Bill To", "Ingram Micro Inc. (Tax ID verified, single entity)"],
-        ["pass", "5. Ship To", "1 Contoso Way, Seattle WA with site contact phone"],
-        ["pass", "6. End User", "Contoso Corporation (Declared entity & address)"],
-        ["pass", "7. Reseller", "Ingram Micro (Authorized distributor channel)"],
-        ["pass", "8. Inco Terms", "FCA Ship Point (Standard accepted terms)"],
-        ["pass", "9. Product Information", "2 SKUs with Qty & Unit Prices verified on PO"],
-        ["pass", "10. PO Total", "$24,242.10 (Lines sum to total mathematically)"],
-        ["pass", "11. Shipping Details", "Carrier: FedEx Ground (Account # on PO)"]
-      ],
-      quoteChecks: [
-        ["pass", "CPQ Quote Exists", "F5Q-00972766 active in Snowflake CPQ replicas"],
-        ["pass", "Opportunity Resolved", "Linked to Opp 006do00000K8sFsAAJ"],
-        ["pass", "Quote Not Expired", "Quote valid through Nov 30, 2026"],
-        ["pass", "Bill-To Matches Account", "Ingram Micro matches Salesforce Account"],
-        ["pass", "End User Matches Quote", "Contoso Corporation matches quote end user"],
-        ["pass", "Currency ISO Match", "USD matches quote currency"],
-        ["pass", "Line Items & Pricing Match", "2 of 2 lines match quote SKUs and prices"],
-        ["pass", "Order Total Reconciliation", "Exact match: $24,242.10 (Variance: $0.00)"],
-        ["pass", "Duplicate PO Check", "No previous booking in Salesforce"]
-      ],
-      flags: [],
-      compare: [
-        ["CPQ Quote Reference", "F5Q-00972766", "F5Q-00972766", "yes"],
-        ["Opportunity Target", "006do00000K8sFsAAJ", "006do00000K8sFsAAJ", "yes"],
-        ["Currency ISO", "USD", "USD", "yes"],
-        ["Net Bookable Total", 24242.10, 24242.10, "yes"]
-      ],
-      lines: [
-        { poSku: "F5-BIG-VE-BTA-25MV18", desc: "BIG-IP VE Best Bundle 25 Mbps", qty: 2, total: 20165.04, sfSku: "F5-BIG-VE-BTA-25MV18", sfTotal: 20165.04, match: "yes" },
-        { poSku: "F5-SVC-BIG-VE+PREL13", desc: "Premium Plus Service (1 Year)", qty: 2, total: 4077.06, sfSku: "F5-SVC-BIG-VE+PREL13", sfTotal: 4077.06, match: "yes" }
-      ],
-      booking: {
-        opportunity: "006do00000K8sFsAAJ", amount: 24242.10, orderType: "Standard",
-        distributor: "Ingram Micro", reseller: "Ingram Micro", issues: false
-      },
-      notes: [
-        { title: "Note to RO: End User Details", body: "Contoso Corporation\n1 Contoso Way, Seattle, WA 98101\nContact info extracted from PO" },
-        { title: "Note to RO: Shipping Account", body: "Carrier: FedEx Ground\nFreight term: Collect (Carrier account stated on PO)" }
-      ]
-    },
-    {
-      id: "wwt", po: "4527709", from: "World Wide Technology", channel: "Reseller Partner",
-      file: "wwt_po_4527709.pdf", received: "08:47 AM", poDate: "Nov 4, 2025",
-      quote: "F5Q-01083998", opportunity: "006Po00000f1Gr7IAE", status: "review",
-      summary: "9 of 11 SOS checklist items passed (2 require SOS review). Quote F5Q-01083998 matched 100%.",
-      checklist: [
-        ["pass", "1. F5 Entity", "Issued to F5 Networks Inc."],
-        ["pass", "2. PO Number", "PO# 4527709 (Valid unique identifier)"],
-        ["pass", "3. Payment Terms", "NET 60"],
-        ["pass", "4. Bill To", "World Wide Technology LLC (Single entity)"],
-        ["warn", "5. Ship To", "Physical address & phone valid; email omitted on PO"],
-        ["pass", "6. End User", "GMF NA US Management Company (Verified)"],
-        ["pass", "7. Reseller", "World Wide Technology (Authorized reseller)"],
-        ["warn", "8. Inco Terms", "'FOB' specified; standard is FCA Origin. SOS sign-off needed."],
-        ["pass", "9. Product Information", "SKU F5-UPG-SFP28-SR, Qty 4, Unit Price $937.48"],
-        ["pass", "10. PO Total", "$3,749.92 (Lines sum to total mathematically)"],
-        ["pass", "11. Shipping Details", "Standard WWT logistics instructions"]
-      ],
-      quoteChecks: [
-        ["pass", "CPQ Quote Exists", "F5Q-01083998 active in Snowflake CPQ replicas"],
-        ["pass", "Opportunity Resolved", "Linked to Opp 006Po00000f1Gr7IAE"],
-        ["pass", "Quote Not Expired", "Quote valid and current"],
-        ["pass", "Bill-To Matches Account", "World Wide Technology LLC matches Account"],
-        ["pass", "Currency ISO Match", "USD matches quote currency"],
-        ["pass", "Line Items & Pricing Match", "100% SKU and line price match ($3,749.92)"],
-        ["pass", "Order Total Reconciliation", "Exact match: $3,749.92 (Variance: $0.00)"],
-        ["pass", "Duplicate PO Check", "No previous booking in Salesforce"]
-      ],
-      flags: [
-        { id: "w1", title: "IncoTerms 'FOB' requires SOS acknowledgement", detail: "F5 standard policy is FCA Origin. Non-destination FOB is acceptable with SOS notation." },
-        { id: "w2", title: "Ship-To contact email omitted", detail: "Physical address and phone are valid; email was omitted on vendor PO." }
-      ],
-      compare: [
-        ["CPQ Quote Reference", "F5Q-01083998", "F5Q-01083998", "yes"],
-        ["Opportunity Target", "006Po00000f1Gr7IAE", "006Po00000f1Gr7IAE", "yes"],
-        ["Currency ISO", "USD", "USD", "yes"],
-        ["Net Bookable Total", 3749.92, 3749.92, "yes"]
-      ],
-      lines: [
-        { poSku: "F5-UPG-SFP28-SR", desc: "Field upgrade: SFP28 transceiver 25G-SR", qty: 4, total: 3749.92, sfSku: "F5-UPG-SFP28-SR", sfTotal: 3749.92, match: "yes" }
-      ],
-      booking: {
-        opportunity: "006Po00000f1Gr7IAE", amount: 3749.92, orderType: "Standard",
-        distributor: "None", reseller: "World Wide Technology", issues: true
-      },
-      notes: [
-        { title: "Note to RO: End User info", body: "GMF NA US Management Company\nComplete contact info on PO" }
-      ]
-    },
-    {
-      id: "dell", po: "PO706839", from: "Dell USA LP", channel: "Direct Enterprise",
-      file: "PO706839.pdf", received: "09:40 AM", poDate: "May 8, 2025",
-      quote: "F5Q-00972677", opportunity: "006Po00000efMf3IAE", status: "review",
-      summary: "9 of 11 SOS checklist items passed (2 require SOS review). F5 Quote check flagged $1,400 unquoted freight.",
-      checklist: [
-        ["pass", "1. F5 Entity", "Issued to F5, Inc."],
-        ["pass", "2. PO Number", "PO# PO706839 (Valid unique identifier)"],
-        ["pass", "3. Payment Terms", "NET 90"],
-        ["pass", "4. Bill To", "Dell USA LP (Single entity)"],
-        ["warn", "5. Ship To", "Physical address valid; Shiner Lab contact phone missing"],
-        ["warn", "6. End User", "Dell internal lab deployment (No separate End User entity)"],
-        ["pass", "7. Reseller", "Direct customer transaction (Reseller N/A)"],
-        ["pass", "8. Inco Terms", "FCA Ship Point (Accepted standard)"],
-        ["pass", "9. Product Information", "Part numbers, quantities, unit prices on PO"],
-        ["pass", "10. PO Total", "$74,844.80 stated on PO"],
-        ["pass", "11. Shipping Details", "Standard Dell logistics specified"]
-      ],
-      quoteChecks: [
-        ["pass", "CPQ Quote Exists", "F5Q-00972677 active in Snowflake CPQ replicas"],
-        ["pass", "Opportunity Resolved", "Linked to Opp 006Po00000efMf3IAE"],
-        ["pass", "Quote Not Expired", "Quote valid and current"],
-        ["pass", "Bill-To Matches Account", "Dell USA LP matches Account"],
-        ["warn", "Line Items & Pricing Match", "Hardware line matches ($73,444.80); Line 2 has $1,400 unquoted freight"],
-        ["warn", "Order Total Reconciliation", "PO Total $74,844.80 vs Quote $73,444.80 (+$1,400.00 freight variance)"],
-        ["pass", "Currency ISO Match", "USD matches quote currency"],
-        ["pass", "Duplicate PO Check", "No previous booking in Salesforce"]
-      ],
-      flags: [
-        { id: "d1", title: "$1,400.00 freight pass-through charge on PO", detail: "PO includes $1,400 shipping charges. Book at Quote hardware total ($73,444.80) and attach RO Note." },
-        { id: "d2", title: "End User details missing on PO", detail: "Checklist allows adding End User info as an RO Note." }
-      ],
-      compare: [
-        ["CPQ Quote Reference", "F5Q-00972677", "F5Q-00972677", "yes"],
-        ["Opportunity Target", "006Po00000efMf3IAE", "006Po00000efMf3IAE", "yes"],
-        ["Net Bookable Total", 74844.80, 73444.80, "no"]
-      ],
-      lines: [
-        { poSku: "(Printed Not Available)", desc: "VELOS upgrade: QSFP28 transceiver (100G-SR4)", qty: 20, total: 73444.80, sfSku: "F5-UPGVELQSFP28-SR4", sfTotal: 73444.80, match: "amount" },
-        { poSku: "SHIPPING", desc: "Material Shipping Charges", qty: 1400, total: 1400.00, sfSku: "(Unquoted Charge)", sfTotal: 0.00, match: "no" }
-      ],
-      booking: {
-        opportunity: "006Po00000efMf3IAE", amount: 73444.80, orderType: "Standard",
-        distributor: "None", reseller: "F5 Direct Deal", issues: true
-      },
-      notes: [
-        { title: "Note to RO: Additional freight charge", body: "PO includes $1,400.00 freight charge on line 2 not in quote. Booked at quote amount ($73,444.80)." },
-        { title: "Note to RO: End User info", body: "Dell Internal / Lab deployment." }
-      ]
-    },
-    {
-      id: "paypal", po: "5100098997", from: "PayPal Inc", channel: "Direct Enterprise",
-      file: "PayPal_PO_5100098997.pdf", received: "09:15 AM", poDate: "Jun 17, 2025",
-      quote: "F5Q-00986557", opportunity: "006Po00000bh75lIAA", status: "review",
-      summary: "8 of 11 SOS checklist items passed (3 require SOS review). F5 Quote checks matched lines by amount.",
-      checklist: [
-        ["pass", "1. F5 Entity", "Issued to F5, Inc."],
-        ["pass", "2. PO Number", "PO# 5100098997 (Valid unique identifier)"],
-        ["pass", "3. Payment Terms", "NET 45"],
-        ["pass", "4. Bill To", "PayPal Inc (Single entity)"],
-        ["warn", "5. Ship To", "Contact name present; missing phone number"],
-        ["warn", "6. End User", "PayPal internal infrastructure deployment"],
-        ["pass", "7. Reseller", "Direct customer transaction (Reseller N/A)"],
-        ["warn", "8. Inco Terms", "'FOB destination' specified; requires SOS sign-off"],
-        ["pass", "9. Product Information", "Customer part numbers mapped to quote lines"],
-        ["pass", "10. PO Total", "$67,081.60 (Lines sum to total mathematically)"],
-        ["pass", "11. Shipping Details", "Standard shipping instructions specified"]
-      ],
-      quoteChecks: [
-        ["pass", "CPQ Quote Exists", "F5Q-00986557 active in Snowflake CPQ replicas"],
-        ["pass", "Opportunity Resolved", "Linked to Opp 006Po00000bh75lIAA"],
-        ["pass", "Quote Not Expired", "Quote valid and current"],
-        ["pass", "Bill-To Matches Account", "PayPal Inc matches Account"],
-        ["pass", "Line Items & Pricing Match", "Lines reconciled by pricing amounts ($63,148.43 + $3,933.17)"],
-        ["pass", "Order Total Reconciliation", "Exact match: $67,081.60 (Variance: $0.00)"],
-        ["pass", "Currency ISO Match", "USD matches quote currency"],
-        ["pass", "Duplicate PO Check", "No previous booking in Salesforce"]
-      ],
-      flags: [
-        { id: "p1", title: "Destination IncoTerms 'FOB destination'", detail: "F5 standard policy requires SOS acknowledgement for destination terms." }
-      ],
-      compare: [
-        ["CPQ Quote Reference", "F5Q-00986557", "F5Q-00986557", "yes"],
-        ["Opportunity Target", "006Po00000bh75lIAA", "006Po00000bh75lIAA", "yes"],
-        ["Net Bookable Total", 67081.60, 67081.60, "yes"]
-      ],
-      lines: [
-        { poSku: "061925.1MG", desc: "BIG-IP Virtual Edition: Local Traffic Manager 1G", qty: 1, total: 63148.43, sfSku: "F5-BIG-LTM-VE-1G-V18", sfTotal: 63148.43, match: "amount" },
-        { poSku: "061925.2MG", desc: "BIG-IP Service: Premium Virtual Edition", qty: 1, total: 3933.17, sfSku: "F5-SVC-BIG-VE+PREL13", sfTotal: 3933.17, match: "amount" }
-      ],
-      booking: {
-        opportunity: "006Po00000bh75lIAA", amount: 67081.60, orderType: "Standard",
-        distributor: "None", reseller: "F5 Direct Deal", issues: true
-      },
-      notes: [
-        { title: "Note to RO: End User info", body: "PayPal Internal Infrastructure." }
-      ]
-    },
-    {
-      id: "synnex", po: "TD-00000-Z", from: "TD SYNNEX Corporation", channel: "Distributor",
-      file: "TD_SYNNEX_PO.pdf", received: "Yesterday", poDate: "Mar 15, 2026",
-      quote: "F5Q-99999999", opportunity: "", status: "return",
-      summary: "All 11 SOS checklist items passed on PO document, but F5 Quote check failed (Quote not found in CPQ).",
-      checklist: [
-        ["pass", "1. F5 Entity", "Issued to F5, Inc."],
-        ["pass", "2. PO Number", "PO# TD-00000-Z (Valid unique identifier)"],
-        ["pass", "3. Payment Terms", "NET 45"],
-        ["pass", "4. Bill To", "TD SYNNEX Corporation (Single entity)"],
-        ["pass", "5. Ship To", "1 Contoso Way, Seattle WA with site contact"],
-        ["pass", "6. End User", "Contoso Corporation (Complete details)"],
-        ["pass", "7. Reseller", "TD SYNNEX (Authorized distributor channel)"],
-        ["pass", "8. Inco Terms", "EXW (Accepted standard)"],
-        ["pass", "9. Product Information", "2 SKUs with Qty & Unit Prices verified on PO"],
-        ["pass", "10. PO Total", "$24,242.10 stated on PO"],
-        ["pass", "11. Shipping Details", "UPS Ground Collect, Account # on PO"]
-      ],
-      quoteChecks: [
-        ["fail", "CPQ Quote Exists", "Quote F5Q-99999999 NOT FOUND in Snowflake CPQ replicas (404)"],
-        ["fail", "Opportunity Resolved", "Cannot link Opportunity without valid CPQ Quote"],
-        ["info", "Quote Expiration Check", "Pending quote resolution"],
-        ["info", "Bill-To Account Match", "Pending quote resolution"],
-        ["info", "Line Items Reconciliation", "Pending quote resolution"],
-        ["info", "Order Total Reconciliation", "Pending quote resolution"]
-      ],
-      flags: [
-        { id: "s1", title: "CPQ Quote F5Q-99999999 does not exist", detail: "Polled Snowflake Enterprise Raw replicas for 24 hours. Reseller must provide valid CPQ Quote." }
-      ],
-      compare: [
-        ["CPQ Quote Reference", "F5Q-99999999", "NOT FOUND", "no"],
-        ["Opportunity Target", "Unresolved", "Unresolved", "na"],
-        ["Net Bookable Total", 24242.10, "No Quote to Compare", "na"]
-      ],
-      lines: [
-        { poSku: "F5-BIG-VE-BTA-25MV18", desc: "BIG-IP VE Best Bundle 25 Mbps", qty: 2, total: 20165.04, sfSku: "(Unresolved)", sfTotal: 0, match: "no" }
-      ],
-      booking: null,
-      notes: []
-    }
-  ];
+  /* Live Inbound Orders Store (Starts clean for live testing) */
+  var SAMPLE_ORDERS = [];
 
   /* State Storage */
-  var STORAGE_KEY = "f5_sos_v4_state";
+  var STORAGE_KEY = "f5_sos_live_v5_state";
   var usdFormatter = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" });
   function fmtMoney(v) { return typeof v === "number" ? usdFormatter.format(v) : (v || ""); }
   function escapeHtml(str) { return String(str || "").replace(/[&<>"']/g, function(m) { return { "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[m]; }); }
@@ -1281,11 +1044,7 @@ textarea.modern-input {
       activeTab: "all",
       searchQuery: "",
       view: { type: "queue" },
-      orders: JSON.parse(JSON.stringify(SAMPLE_ORDERS)).map(function(o) {
-        o.reviewedFlags = [];
-        o.detailTab = "reconcile";
-        return o;
-      })
+      orders: []
     };
   }
 
@@ -1399,7 +1158,7 @@ textarea.modern-input {
     html += '</tr></thead><tbody>';
 
     if (!filtered.length) {
-      html += '<tr><td colspan="7" style="text-align:center; padding: 48px; color: var(--text-muted); font-style:italic;">No purchase orders match the selected filter.</td></tr>';
+      html += '<tr><td colspan="7" style="text-align:center; padding: 48px; color: var(--text-muted); font-style:italic;">No purchase orders in queue. Waiting for live inbound emails...</td></tr>';
     } else {
       filtered.forEach(function(o) {
         var statusBadge = '<span class="status-pill status-ready">✓ READY TO BOOK</span>';
@@ -1439,7 +1198,11 @@ textarea.modern-input {
 
   /* ---------------------------------------------------------------- RENDER DETAIL WORKSPACE */
   function renderDetailView(o) {
-    var openFlags = o.flags.filter(function(f){ return (o.reviewedFlags || []).indexOf(f.id) === -1; });
+    (o.flags || []).forEach(function(f, idx) {
+      if (!f.id) f.id = "flag_" + (f.rule || "item") + "_" + idx;
+    });
+    if (!o.reviewedFlags) o.reviewedFlags = [];
+    var openFlags = o.flags.filter(function(f){ return o.reviewedFlags.indexOf(f.id) === -1; });
     var isApprovable = o.status === "ready" || (o.status === "review" && openFlags.length === 0);
     var isBooked = o.status === "booked";
     var activeTab = o.detailTab || "reconcile";
@@ -1518,20 +1281,26 @@ textarea.modern-input {
       html += '<div class="content-card" style="margin-bottom:24px;border-left:4px solid var(--status-warning);">';
       html += '<div style="padding:14px 20px;background:#FFFDF7;border-bottom:1px solid var(--border-light);display:flex;justify-content:space-between;align-items:center;">';
       html += '<strong style="color:var(--status-warning);font-size:13.5px;">🛡️ Policy Exceptions Requiring SOS Acknowledgement (' + o.flags.length + ')</strong>';
+      html += '<div style="display:flex;align-items:center;gap:12px;">';
       html += '<span style="font-size:12px;color:var(--text-muted);">' + (o.flags.length - openFlags.length) + ' of ' + o.flags.length + ' resolved</span>';
+      if (openFlags.length > 0) {
+        html += '<button type="button" class="btn-action-outline" id="ackAllFlagsBtn" style="font-size:11.5px;padding:4px 10px;background:#FFF;font-weight:600;">✓ Acknowledge All (' + openFlags.length + ')</button>';
+      }
+      html += '</div>';
       html += '</div>';
       html += '<div style="padding:16px 20px;">';
-      o.flags.forEach(function(f) {
-        var isDone = (o.reviewedFlags || []).indexOf(f.id) > -1;
-        html += '<div style="background:#FFFFFF;border:1px solid var(--border-light);border-radius:var(--radius-md);padding:12px 16px;margin-bottom:10px;display:flex;justify-content:space-between;align-items:center;">';
-        html += '<div>';
+      o.flags.forEach(function(f, idx) {
+        var flagId = f.id || ("flag_" + (f.rule || "item") + "_" + idx);
+        var isDone = (o.reviewedFlags || []).indexOf(flagId) > -1;
+        html += '<div style="background:#FFFFFF;border:1px solid var(--border-light);border-radius:var(--radius-md);padding:12px 16px;margin-bottom:10px;display:flex;justify-content:space-between;align-items:center;gap:12px;">';
+        html += '<div style="flex:1;">';
         html += '<div style="font-weight:700;color:var(--text-heading);font-size:13.5px;">' + escapeHtml(f.title) + '</div>';
         html += '<div style="font-size:12px;color:var(--text-muted);margin-top:2px;">' + escapeHtml(f.detail) + '</div>';
         html += '</div>';
         if (isDone) {
-          html += '<span style="color:var(--status-success);font-weight:700;font-size:12px;">✓ Acknowledged (<a href="#" data-undo-flag="' + f.id + '" style="color:var(--text-muted);">Undo</a>)</span>';
+          html += '<span style="color:var(--status-success);font-weight:700;font-size:12px;white-space:nowrap;">✓ Acknowledged (<a href="#" data-undo-flag="' + flagId + '" style="color:var(--text-muted);text-decoration:underline;">Undo</a>)</span>';
         } else {
-          html += '<button type="button" class="btn-action-outline" data-ack-flag="' + f.id + '" style="font-size:11.5px;padding:5px 10px;">Acknowledge Exception</button>';
+          html += '<button type="button" class="btn-action-outline" data-ack-flag="' + flagId + '" style="font-size:11.5px;padding:5px 12px;white-space:nowrap;">Acknowledge Exception</button>';
         }
         html += '</div>';
       });
@@ -1674,24 +1443,7 @@ textarea.modern-input {
         html += '<div class="form-input-group"><label>' + escapeHtml(n.title) + '</label><textarea class="modern-input" id="editNoteArea_' + idx + '">' + escapeHtml(n.body) + '</textarea></div>';
       });
 
-      // API Inspector Toggle
-      html += '<div style="margin-top:16px;border-top:1px solid var(--border-light);padding-top:12px;">';
-      html += '<button type="button" class="btn-action-outline" style="width:100%;font-size:12px;justify-content:center;" id="toggleJsonViewerBtn">Inspect Live SFDC API Payload</button>';
-      html += '<pre class="code-inspector-box" id="jsonViewerArea" style="display:none;margin-top:12px;">' + escapeHtml(JSON.stringify({
-        Name: "BF-AUTO-" + o.po,
-        Opportunity__c: o.booking.opportunity,
-        PO__c: o.po,
-        F_5_Quote__c: o.quote,
-        Total_Amount__c: o.booking.amount,
-        CurrencyIsoCode: "USD",
-        Sales_Order_Type__c: o.booking.orderType,
-        Distributor__c: o.booking.distributor === "None" ? null : o.booking.distributor,
-        Reseller_Name__c: o.booking.reseller,
-        Stage__c: "In Process by SOS",
-        Order_Issues__c: o.flags.length > 0,
-        AttachedContentNotes: o.notes
-      }, null, 2)) + '</pre>';
-      html += '</div>';
+
 
       html += '</div></div>';
     }
@@ -1767,14 +1519,36 @@ textarea.modern-input {
       return;
     }
 
-    // Acknowledge Flag
+    // Acknowledge All Flags
+    var ackAll = e.target.closest("#ackAllFlagsBtn");
+    if (ackAll) {
+      var o = getOrderById(appState.view.id);
+      if (o && o.flags) {
+        if (!o.reviewedFlags) o.reviewedFlags = [];
+        o.flags.forEach(function(f, idx) {
+          var fid = f.id || ("flag_" + (f.rule || "item") + "_" + idx);
+          if (o.reviewedFlags.indexOf(fid) === -1) {
+            o.reviewedFlags.push(fid);
+          }
+        });
+        saveState();
+        updateApp();
+        notifyToast("✓ All policy exceptions acknowledged for SOS booking.");
+      }
+      return;
+    }
+
+    // Acknowledge Single Flag
     var ack = e.target.closest("[data-ack-flag]");
     if (ack) {
       var fid = ack.getAttribute("data-ack-flag");
       var o = getOrderById(appState.view.id);
       if (o) {
         if (!o.reviewedFlags) o.reviewedFlags = [];
-        o.reviewedFlags.push(fid);
+        if (o.reviewedFlags.indexOf(fid) === -1) {
+          o.reviewedFlags.push(fid);
+        }
+        saveState();
         updateApp();
       }
       return;
@@ -1788,16 +1562,9 @@ textarea.modern-input {
       var o = getOrderById(appState.view.id);
       if (o && o.reviewedFlags) {
         o.reviewedFlags = o.reviewedFlags.filter(function(x){ return x !== fid; });
+        saveState();
         updateApp();
       }
-      return;
-    }
-
-    // Toggle JSON Area
-    var toggleJson = e.target.closest("#toggleJsonViewerBtn");
-    if (toggleJson) {
-      var box = document.getElementById("jsonViewerArea");
-      if (box) box.style.display = box.style.display === "none" ? "block" : "none";
       return;
     }
 
@@ -1943,7 +1710,11 @@ textarea.modern-input {
       fetch("/api/book/" + encodeURIComponent(o.id), {
         method: "POST",
         headers: { "Content-Type": "application/json", "X-SOS-Portal": "1" },
-        body: JSON.stringify({ approver: approverName, note: auditNote })
+        body: JSON.stringify({
+          approver: approverName,
+          note: auditNote,
+          acknowledged_flags: (o.reviewedFlags || [])
+        })
       })
       .then(function(r) { return r.json(); })
       .then(function(resp) {
@@ -2044,12 +1815,7 @@ textarea.modern-input {
     html += '<input type="file" id="pdfFileInput" accept="application/pdf" style="display:none;">';
     html += '</div>';
 
-    html += '<div style="margin-top:20px;padding-top:16px;border-top:1px solid var(--border-light);">';
-    html += '<div style="font-size:12px;font-weight:700;color:var(--text-muted);text-transform:uppercase;margin-bottom:8px;">Quick Ingest Test Sample:</div>';
-    html += '<div style="display:flex;gap:10px;">';
-    html += '<button type="button" class="btn-action-outline" id="simulateSamplePoBtn" style="flex:1;justify-content:center;">📥 Ingest Real PO: 4501706557 (NTT America / F5Q-01007707)</button>';
-    html += '</div>';
-    html += '</div>';
+
 
     html += '</div>';
     html += '<div class="modal-footer-bar">';
@@ -2081,26 +1847,7 @@ textarea.modern-input {
       }
     };
 
-    document.getElementById("simulateSamplePoBtn").onclick = function() {
-      closeModal();
-      notifyToast("🚀 Simulating colleague sending PO 4501706557 via email...");
-      fetch("/api/upload", {
-        method: "POST",
-        headers: { "X-Filename": "4501706557 1 1 2.pdf", "Content-Type": "application/pdf", "X-SOS-Portal": "1" },
-        body: "%PDF-1.4 sample payload"
-      })
-      .then(function(r) { return r.json(); })
-      .then(function(order) {
-        if (order && order.id) {
-          order.isLive = true;
-          appState.orders = appState.orders.filter(function(x){ return x.id !== order.id; });
-          appState.orders.unshift(order);
-          updateApp();
-          notifyToast("✨ PO #" + order.po + " ingested & validated!");
-        }
-      })
-      .catch(function(e) { console.warn(e); });
-    };
+
 
     function uploadFile(file) {
       closeModal();
@@ -2191,21 +1938,37 @@ textarea.modern-input {
     fetch("/api/orders")
       .then(function(r) { return r.json(); })
       .then(function(liveOrders) {
-        if (Array.isArray(liveOrders) && liveOrders.length > 0) {
-          var seen = {};
-          var merged = [];
-          liveOrders.forEach(function(lo) {
-            lo.isLive = true;
-            merged.push(lo);
-            seen[lo.id] = true;
-          });
-          appState.orders.forEach(function(o) {
-            if (!seen[o.id]) {
-              merged.push(o);
-              seen[o.id] = true;
+        if (Array.isArray(liveOrders)) {
+          var localMap = {};
+          (appState.orders || []).forEach(function(existing) {
+            if (existing && existing.id) {
+              localMap[existing.id] = existing;
             }
           });
-          appState.orders = merged;
+
+          liveOrders.forEach(function(lo) {
+            lo.isLive = true;
+            (lo.flags || []).forEach(function(f, idx) {
+              if (!f.id) f.id = "flag_" + (f.rule || "item") + "_" + idx;
+            });
+            var prev = localMap[lo.id];
+            if (prev) {
+              if (Array.isArray(prev.reviewedFlags) && prev.reviewedFlags.length) {
+                lo.reviewedFlags = prev.reviewedFlags;
+              }
+              if (prev.detailTab) {
+                lo.detailTab = prev.detailTab;
+              }
+              if (prev.status === "booked") {
+                lo.status = "booked";
+                lo.booking_result = prev.booking_result;
+              }
+            }
+            if (!lo.reviewedFlags) lo.reviewedFlags = [];
+          });
+
+          appState.orders = liveOrders;
+          saveState();
           updateApp();
         }
       })

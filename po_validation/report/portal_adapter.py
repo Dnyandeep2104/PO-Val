@@ -127,9 +127,10 @@ def result_to_portal_order(
 
     # Flags / Review exceptions
     flags = []
-    for f in result.findings:
+    for idx, f in enumerate(result.findings):
         if f.status in (Status.FAIL, Status.WARN):
             flags.append({
+                "id": f"flag_{f.rule_id}_{idx}",
                 "severity": f.severity.value,
                 "rule": f.rule_id,
                 "title": f.rule_id.replace("_", " ").title(),

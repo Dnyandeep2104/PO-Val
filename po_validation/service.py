@@ -437,6 +437,12 @@ class LivePOService:
                     "error": sf_res.get("error") or "Salesforce booking failed.",
                     "details": sf_res,
                 }
+        except Exception as exc:
+            log.error("Salesforce booking exception for %s: %s", order_id, exc, exc_info=True)
+            return {
+                "success": False,
+                "error": f"Salesforce booking error: {str(exc)}",
+            }
         finally:
             with self._book_lock_mutex:
                 self._book_locks.discard(order_id)
