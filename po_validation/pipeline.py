@@ -130,7 +130,19 @@ class Pipeline:
         if self.quote_source is None or not po.quote_number:
             return None
         try:
-            return self.quote_source.fetch(po.quote_number)
+            # A PO can cite more than one quote (a superseded one and its
+            # revision). Book against the first that actually exists.
+            first = None
+            for qn in (po.quote_numbers or [po.quote_number]):
+                q = self.quote_source.fetch(qn)
+                if q.found:
+                    if qn != po.quote_number:
+                        po.warnings.append(f"Cited quote {po.quote_number} not found; "
+                                           f"using {qn}, also cited on the PO.")
+                        po.quote_number = qn
+                    return q
+                first = first or q
+            return first
         except ValueError as exc:
             # Malformed quote number. Not an outage; the rules will catch it.
             log.info("quote lookup skipped for %s: %s", po.source_id, exc)

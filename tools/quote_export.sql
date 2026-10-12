@@ -14,15 +14,18 @@
 -- are known, quantity / currency / status get added here.
 
 SELECT
-      quote.name            AS quote_number
-    , cafsl_part_number_c   AS part_number
-    , pi_total_price_c      AS total_price
-    , cafsl_opportunity_c   AS opportunity_id
-    , cafsl_account_c       AS account_id
+      quote.name                   AS quote_number
+    , line.cafsl_part_number_c     AS part_number
+    , line.cafsl_total_price_c     AS total_price     -- full-term net; NOT pi_total_price_c (one year)
+    , line.bundle_total_price_c    AS bundle_total    -- set on a priced bundle's $0 parent
+    , line.bundle_desc_c           AS bundle_desc
+    , line.type_c                  AS line_type
+    , cafsl_opportunity_c          AS opportunity_id
+    , cafsl_account_c              AS account_id
 FROM PRD_ENT_RAW.SALESFORCE.CAFSL_ORACLE_QUOTE_C quote
 LEFT JOIN PRD_ENT_RAW.SALESFORCE.CAFSL_ORACLE_QUOTE_LINE_ITEM_C line
        ON quote.id = line.cafsl_oracle_quote_c
+      AND line.is_deleted = false        -- in the JOIN, so a header with no lines still shows
 WHERE quote.name IN ('F5Q-01007707', 'F5Q-00986557', 'F5Q-00972677',
                      'F5Q-01062638', 'F5Q-00974839', 'F5Q-01083998')
-  AND line.is_deleted = false
-ORDER BY quote.name, cafsl_part_number_c;
+ORDER BY quote.name, line.cafsl_part_number_c;

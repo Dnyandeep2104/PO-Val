@@ -20,6 +20,7 @@ from .layout import PdfView, to_decimal
 from .tables import read_records
 
 QUOTE_RE = r"\bF5Q-\d{8}\b"
+QUOTE_LOOSE_RE = r"\bF5Q\s?[-\u2013\u2014_.]?\s?\d{8}\b"
 
 # The four F5 contracting entities named at the top of the checklist.
 F5_ENTITIES: list[tuple[str, str]] = [
@@ -158,11 +159,20 @@ class BaseExtractor:
 
     # ----------------------------------------------------------- the fields
     def quote_number(self, view: PdfView) -> Optional[str]:
-        found = view.find_all(QUOTE_RE)
-        return found[0].upper() if found else None
+        found = self.all_quote_numbers(view)
+        return found[0] if found else None
 
     def all_quote_numbers(self, view: PdfView) -> list[str]:
-        return [q.upper() for q in view.find_all(QUOTE_RE)]
+        # Resellers type the CPQ number freehand: 'F5Q 01271679',
+        # 'F5Q01271679', 'F5Q–01271679'. All are the same quote; normalise
+        # to the canonical form the quote lookup expects.
+        out: list[str] = []
+        for raw in view.find_all(QUOTE_LOOSE_RE):
+            digits = re.sub(r"\D", "", raw)[-8:]
+            q = f"F5Q-{digits}"
+            if q not in out:
+                out.append(q)
+        return out
 
     def po_number(self, view: PdfView) -> Optional[str]:
         val = view.label_value(PO_LABELS, value_re=PO_VALUE_RE,

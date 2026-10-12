@@ -40,7 +40,12 @@ COLUMNS: dict[str, tuple[str, str, bool]] = {
     # account are not on the line table. alias None = unqualified, exactly
     # as the proven query did.
     "part_number":      (None,    "cafsl_part_number_c",       True),
-    "total_price":      (None,    "pi_total_price_c",          True),
+    # CAFSL_TOTAL_PRICE_C is the full-term extended net price and is what
+    # resellers pay. PI_TOTAL_PRICE_C (the prototype's column) is a one-year
+    # figure: 1/3 of a 36-month support line, $0 on training and on bundle
+    # children. Verified line by line against the SYNNEX, Carahsoft and NTT
+    # sample POs (14,785.02 / 778,650.02 / 81,075.10 against the printed totals).
+    "total_price":      ("line",  "cafsl_total_price_c",       True),
     "opportunity_id":   (None,    "cafsl_opportunity_c",       True),
     "account_id":       (None,    "cafsl_account_c",           True),
     "quantity":         ("line",  "cafsl_quantity_c",          False),
@@ -49,6 +54,9 @@ COLUMNS: dict[str, tuple[str, str, bool]] = {
     "currency":         ("quote", "currencyisocode",           False),
     "expiry_date":      ("quote", "cafsl_expiration_date_c",   False),
     "quote_status":     ("quote", "cafsl_status_c",            False),
+    "bundle_total":     ("line",  "bundle_total_price_c",      True),
+    "bundle_desc":      ("line",  "bundle_desc_c",             True),
+    "line_type":        ("line",  "type_c",                    True),
 }
 
 
@@ -80,8 +88,8 @@ class SnowflakeQuoteSource(QuoteSource):
             FROM {QUOTE_TABLE} quote
             LEFT JOIN {LINE_TABLE} line
                    ON quote.id = line.cafsl_oracle_quote_c
+                  AND line.is_deleted = false
             WHERE quote.name = '{q}'
-              AND line.is_deleted = false
             ORDER BY cafsl_part_number_c
         """
         pdf = self._read(sql)
@@ -160,6 +168,9 @@ class SnowflakeQuoteSource(QuoteSource):
                 unit_price=get(row, "unit_price"),
                 total_price=get(row, "total_price"),
                 description=get(row, "description"),
+                bundle_total=get(row, "bundle_total"),
+                bundle_key=get(row, "bundle_desc"),
+                line_type=get(row, "line_type"),
             ))
 
         expiry = get(first, "expiry_date")

@@ -49,7 +49,7 @@ HEADER_SYNONYMS: dict[str, list[str]] = {
         r"item", r"item\s*#", r"pos", r"no\.?", r"#", r"seq", r"s\.?no\.?",
     ],
     "part_number": [
-        r"(?:item\s*\.?\s*)?part\s*(?:#|no\.?|number)?", r"item\.?part.*",
+        r"(?:item\s*\.?\s*)?part\s*(?:#|no\.?|number)?",
         r"part\s*#\s*/\s*description",
         r"item\s*(?:code|number)", r"product\s*(?:code|number|#|id)?",
         r"material(?:\s*(?:no\.?|number))?", r"sku", r"model",
@@ -226,10 +226,20 @@ def find_columns(rows: list[Row], idx: int,
         if len(words) < 3:
             continue
 
+        # Words only fuse into one label when they sit a normal word-space
+        # apart. 'Item' and 'Description' are two column headings 100pt
+        # apart; reading them as the label 'Item Description' deletes the
+        # SKU column and the table yields zero lines.
+        heights = sorted(w.height for w in words if w.height > 0)
+        max_gap = max(4.0, (heights[len(heights) // 2] if heights else 8.0) * 0.9)
+
         claims: list[tuple[str, int, float, float, str, int]] = []
         for n in (4, 3, 2, 1):
             for i in range(len(words) - n + 1):
                 chunk = words[i:i + n]
+                if n > 1 and any(chunk[k + 1].x0 - chunk[k].x1 > max_gap
+                                 for k in range(n - 1)):
+                    continue
                 label = " ".join(w.text for w in chunk)
                 for field, spec in _label_matches(label):
                     claims.append((field, spec + n * 10,
@@ -367,11 +377,28 @@ def find_regions(view: PdfView, min_score: int = 6) -> list[Region]:
                     continue
                 body.append(r)
             if body:
-                regions.append(Region(
-                    page.index, hrows,
-                    expand_combined(widen(columns, page.width)),
-                    body, score))
+                cols = retype_by_content(
+                    expand_combined(widen(columns, page.width)), body)
+                regions.append(Region(page.index, hrows, cols, body, score))
     return regions
+
+
+def retype_by_content(cols: dict[str, Column], body: list[Row]) -> dict[str, Column]:
+    """Trust the cells over the heading. 'Item' is a line-number heading on
+    some templates and the SKU heading on many others; when the cells
+    under it are SKU-shaped and no part column exists, it is the part
+    column."""
+    col = cols.get("line_no")
+    if col is None or "part_number" in cols:
+        return cols
+    toks = [w.text for r in body for w in r.words_in(col.x0, col.x1)]
+    skus = [t for t in toks if SKU_RE.match(t) and not is_money(t)]
+    nums = [t for t in toks if LINE_NO_RE.match(t)]
+    if skus and len(skus) > len(nums):
+        cols = dict(cols)
+        c = cols.pop("line_no")
+        cols["part_number"] = Column("part_number", c.x0, c.x1, c.label)
+    return cols
 
 
 # ---------------------------------------------------------------------------

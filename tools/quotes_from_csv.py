@@ -26,7 +26,13 @@ from pathlib import Path
 ALIASES = {
     "quote_number":   ["quote_number", "name", "quote_name", "quote"],
     "part_number":    ["part_number", "cafsl_part_number_c", "part", "sku"],
-    "total_price":    ["total_price", "pi_total_price_c", "line_total", "amount"],
+    # cafsl_total_price_c is the full-term price resellers pay; pi_total_price_c
+    # is a one-year figure and is only a last resort for old exports.
+    "total_price":    ["total_price", "cafsl_total_price_c", "line_total", "amount",
+                       "pi_total_price_c"],
+    "bundle_total":   ["bundle_total", "bundle_total_price_c"],
+    "bundle_desc":    ["bundle_desc", "bundle_desc_c"],
+    "line_type":      ["line_type", "type_c"],
     "unit_price":     ["unit_price", "cafsl_unit_price_c", "price"],
     "quantity":       ["quantity", "cafsl_quantity_c", "qty"],
     "opportunity_id": ["opportunity_id", "cafsl_opportunity_c", "opportunity"],
@@ -112,11 +118,14 @@ def main(argv=None) -> int:
             n = number(row.get(cmap["quantity"]))
             if n:
                 line["quantity"] = int(float(n))
-        for f in ("unit_price", "total_price"):
+        for f in ("unit_price", "total_price", "bundle_total"):
             if f in cmap:
                 n = number(row.get(cmap[f]))
                 if n:
                     line[f] = n
+        for f in ("bundle_desc", "line_type"):
+            if f in cmap and clean(row.get(cmap[f])):
+                line[f] = clean(row.get(cmap[f]))
         q["lines"].append(line)
 
     out = Path(a.out)

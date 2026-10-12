@@ -136,6 +136,11 @@ def quote_found(ctx: Ctx, p: dict) -> Finding:
     rid, sev = p["id"], p["severity"]
     if ctx.quote is None:
         return _f(rid, Status.SKIP, sev, "Quote lookup was not attempted.")
+    if ctx.quote.found and not ctx.quote.lines:
+        return _f(rid, Status.FAIL, sev,
+                  f"Quote {ctx.quote.quote_number} exists but none of its line items have "
+                  f"replicated to {ctx.quote.source} yet. Retry shortly.",
+                  actual=ctx.quote.quote_number)
     if ctx.quote.found:
         return _f(rid, Status.PASS, sev,
                   f"Quote {ctx.quote.quote_number} found in {ctx.quote.source} "
@@ -330,29 +335,58 @@ def line_items_match(ctx: Ctx, p: dict) -> list[Finding]:
     q_agg = _aggregate(ctx.quote.lines)
 
     findings: list[Finding] = []
+    notes: list[str] = []
     matched = 0
 
+    # 1. Priced bundles. CPQ puts $0 on the parent SKU and the money on the
+    #    children; a reseller may print the price on the parent instead
+    #    (NTT: F5-NX-LAB-CNE-BNDSUB at 81,075.60, children at $0). Compare
+    #    the bundle as a whole and take its SKUs out of the per-part pass.
+    for key, members in _bundle_groups(ctx.quote.lines).items():
+        skus = {m.part_number for m in members if m.part_number}
+        on_po = skus & set(po_agg)
+        if not on_po:
+            continue                     # whole bundle missing: per-part pass reports it
+        q_amt = sum((m.total_price or Decimal("0")) for m in members) \
+            or next((m.bundle_total for m in members if m.bundle_total), Decimal("0"))
+        po_amt = sum((po_agg[s_]["total"] or Decimal("0")) for s_ in on_po)
+        extra = sorted(on_po - skus)
+        for s_ in skus:
+            po_agg.pop(s_, None)
+            q_agg.pop(s_, None)
+        delta = po_amt - q_amt
+        if abs(delta) <= tol:
+            matched += 1
+            notes.append(f"bundle '{(key or '')[:50]}' ({len(skus)} SKUs) matches as a "
+                         f"whole: PO {po_amt} vs quote {q_amt}")
+        else:
+            findings.append(_f(
+                rid, Status.FAIL, sev,
+                f"Bundle '{(key or '')[:50]}': PO total {po_amt} vs quote {q_amt}, off by "
+                f"{delta:+}.", expected=str(q_amt), actual=str(po_amt), delta=str(delta)))
+
+    # 2. Part by part.
+    price_deltas: list[tuple[str, Decimal, Finding]] = []
+    extras: dict[str, dict] = {}
+    missing: dict[str, dict] = {}
+    credits: dict[str, dict] = {}
     for part in sorted(set(po_agg) | set(q_agg)):
         on_po, on_quote = po_agg.get(part), q_agg.get(part)
 
         if on_quote is None:
-            findings.append(_f(
-                rid, Status.FAIL, p.get("extra_severity", "BLOCKER"),
-                f"Part {part} appears on the PO but not on quote "
-                f"{ctx.quote.quote_number}.",
-                actual=part, line_ref=part))
+            extras[part] = on_po
             continue
 
         if on_po is None:
-            findings.append(_f(
-                rid, Status.FAIL, p.get("missing_severity", "MAJOR"),
-                f"Part {part} is on the quote but absent from the PO "
-                f"(qty {on_quote['qty']}, {on_quote['total']}). Partial order?",
-                expected=part, line_ref=part))
+            if not on_quote["total"]:
+                notes.append(f"{part} is on the quote at $0 and not on the PO (included)")
+            elif on_quote["total"] < 0:
+                credits[part] = on_quote
+            else:
+                missing[part] = on_quote
             continue
 
         line_ok = True
-
         if check_qty and on_po["qty"] is not None and on_quote["qty"] is not None:
             if on_po["qty"] != on_quote["qty"]:
                 line_ok = False
@@ -367,12 +401,13 @@ def line_items_match(ctx: Ctx, p: dict) -> list[Finding]:
             delta = on_po["total"] - on_quote["total"]
             if abs(delta) > tol:
                 line_ok = False
-                findings.append(_f(
-                    rid, Status.FAIL, sev,
-                    f"Part {part}: PO total {on_po['total']} vs quote "
-                    f"{on_quote['total']}, off by {delta:+}.",
-                    expected=str(on_quote["total"]), actual=str(on_po["total"]),
-                    delta=str(delta), line_ref=part))
+                f_ = _f(rid, Status.FAIL, sev,
+                        f"Part {part}: PO total {on_po['total']} vs quote "
+                        f"{on_quote['total']}, off by {delta:+}.",
+                        expected=str(on_quote["total"]), actual=str(on_po["total"]),
+                        delta=str(delta), line_ref=part)
+                findings.append(f_)
+                price_deltas.append((part, delta, f_))
         elif on_po["total"] is None:
             line_ok = False
             findings.append(_f(
@@ -383,12 +418,85 @@ def line_items_match(ctx: Ctx, p: dict) -> list[Finding]:
         if line_ok:
             matched += 1
 
+    # 3. Trade-in credits. Resellers usually net them into the hardware
+    #    price instead of listing them (Carahsoft: R10600 printed 15,999.99
+    #    under the quote; the quote carries 4 x -4,000.00 credit lines).
+    if credits:
+        credit_total = sum(c["total"] for c in credits.values())
+        under = [(pt, d, f_) for pt, d, f_ in price_deltas if d < 0]
+        if under and abs(sum(d for _, d, _ in under) - credit_total) <= tol:
+            for _, _, f_ in under:
+                findings.remove(f_)
+            matched += len(under)
+            notes.append(f"trade-in credit {credit_total} netted into "
+                         f"{', '.join(pt for pt, _, _ in under)} on the PO")
+        else:
+            for part, c in credits.items():
+                findings.append(_f(
+                    rid, Status.FAIL, p.get("missing_severity", "MAJOR"),
+                    f"Credit {part} ({c['total']}) is on the quote but neither listed on "
+                    f"the PO nor netted into a line price.", expected=str(c["total"]),
+                    line_ref=part))
+
+    # 4. A PO SKU that is not on the quote, where the quote has a different
+    #    SKU at the same price and quantity, is almost always a typo or a
+    #    SKU revision (4661555: F5-ADD-BIG-R56R59B vs F5-ADD-BIG-R56R59).
+    #    That is a question for SOS, not grounds to return the PO.
+    for part, on_po in list(extras.items()):
+        twin = next((q for q, v in missing.items()
+                     if v["total"] is not None and on_po["total"] is not None
+                     and abs(v["total"] - on_po["total"]) <= tol
+                     and (v["qty"] is None or on_po["qty"] is None or v["qty"] == on_po["qty"])),
+                    None)
+        if twin:
+            missing.pop(twin)
+            extras.pop(part)
+            findings.append(_f(
+                rid, Status.FAIL, sev,
+                f"PO SKU {part} is not on quote {ctx.quote.quote_number}, but the quote has "
+                f"{twin} at the same price and quantity ({on_po['total']}). Likely a SKU "
+                f"typo or revision; confirm which SKU to book.",
+                expected=twin, actual=part, line_ref=part))
+
+    for part, on_po in extras.items():
+        findings.append(_f(
+            rid, Status.FAIL, p.get("extra_severity", "BLOCKER"),
+            f"Part {part} appears on the PO but not on quote "
+            f"{ctx.quote.quote_number}.",
+            actual=part, line_ref=part))
+    for part, on_quote in missing.items():
+        findings.append(_f(
+            rid, Status.FAIL, p.get("missing_severity", "MAJOR"),
+            f"Part {part} is on the quote but absent from the PO "
+            f"(qty {on_quote['qty']}, {on_quote['total']}). Partial order?",
+            expected=part, line_ref=part))
+
+    note = f" Notes: {'; '.join(notes)}." if notes else ""
     if not findings:
         findings.append(_f(
             rid, Status.PASS, sev,
             f"All {matched} part(s) match the quote on quantity and price "
-            f"within {tol} tolerance."))
+            f"within {tol} tolerance.{note}"))
+    elif notes:
+        findings.append(_f(rid, Status.PASS, sev, f"Reconciled:{note[7:]}"))
     return findings
+
+
+def _bundle_groups(lines) -> dict[str, list]:
+    """Quote lines that make up a priced bundle, keyed by bundle.
+
+    A parent carries BUNDLE_TOTAL_PRICE_C; its components share its
+    BUNDLE_DESC_C. Plain configurations also share a description but have
+    no bundle total, so they are never grouped.
+    """
+    groups: dict[str, list] = {}
+    for parent in lines:
+        if not parent.bundle_total:
+            continue
+        key = parent.bundle_key or f"parent:{parent.part_number}"
+        groups[key] = ([l for l in lines if l.bundle_key == parent.bundle_key]
+                       if parent.bundle_key else [parent])
+    return groups
 
 
 @rule("po_total_matches_quote")

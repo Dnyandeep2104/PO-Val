@@ -131,7 +131,8 @@ class SnowflakeConnectorQuoteSource(SnowflakeQuoteSource):
             for logical, (alias, col, _) in cols.items())
         sql = (f"SELECT {select} FROM {QUOTE_TABLE} quote "
                f"LEFT JOIN {LINE_TABLE} line ON quote.id = line.cafsl_oracle_quote_c "
-               f"WHERE quote.name = %s AND line.is_deleted = false "
+               f"AND line.is_deleted = false "
+               f"WHERE quote.name = %s "
                f"ORDER BY cafsl_part_number_c")
         pdf = self._read(sql, (q,))
         if pdf is None or len(pdf) == 0:

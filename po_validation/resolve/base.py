@@ -102,13 +102,20 @@ class StubQuoteSource(QuoteSource):
             qnum = item.get("quote_number") or item.get("name")
             if not qnum:
                 continue
+            # Missing means unknown (rule SKIPs), never zero. Defaulting
+            # quantity to 0 failed every quantity check on every PO.
+            def num(v, cast=Decimal):
+                return None if v in (None, "") else cast(str(v))
             lines = [
                 QuoteLine(
                     part_number=l.get("part_number") or l.get("part") or "",
                     description=l.get("description") or "",
-                    quantity=Decimal(str(l.get("quantity") or 0)),
-                    unit_price=Decimal(str(l.get("unit_price") or 0)),
-                    total_price=Decimal(str(l.get("total_price") or 0)),
+                    quantity=num(l.get("quantity"), lambda x: int(Decimal(x))),
+                    unit_price=num(l.get("unit_price")),
+                    total_price=num(l.get("total_price")),
+                    bundle_total=num(l.get("bundle_total")),
+                    bundle_key=l.get("bundle_desc"),
+                    line_type=l.get("line_type"),
                 )
                 for l in item.get("lines", [])
             ]
@@ -120,7 +127,10 @@ class StubQuoteSource(QuoteSource):
                 end_user_name=item.get("end_user_name"),
                 reseller_name=item.get("reseller_name"),
                 currency=item.get("currency", "USD"),
-                status=item.get("status", "Bookable"),
+                # No status in the export means unknown: the status rule
+                # SKIPs. "Bookable" was not an allowed value and BLOCKED
+                # every order whenever Snowflake was unreachable.
+                status=item.get("status"),
                 lines=lines,
             )
             quotes[qnum.upper()] = q

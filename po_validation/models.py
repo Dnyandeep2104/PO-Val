@@ -201,15 +201,27 @@ class QuoteLine:
     unit_price: Optional[Decimal] = None
     total_price: Optional[Decimal] = None
     description: Optional[str] = None
+    # CPQ structure the matcher needs. A priced bundle carries its money on
+    # the children and BUNDLE_TOTAL_PRICE_C on a $0 parent; a reseller may
+    # print it either way round. Trade-in credits are negative lines that
+    # resellers usually net into the hardware price.
+    bundle_total: Optional[Decimal] = None
+    bundle_key: Optional[str] = None
+    line_type: Optional[str] = None
 
     def __post_init__(self):
         self.part_number = normalize_part(self.part_number)
         self.unit_price = money(self.unit_price)
         self.total_price = money(self.total_price)
+        self.bundle_total = money(self.bundle_total)
 
     @property
     def key(self) -> tuple:
         return (self.part_number, self.quantity)
+
+    @property
+    def is_credit(self) -> bool:
+        return self.total_price is not None and self.total_price < 0
 
 
 @dataclass
