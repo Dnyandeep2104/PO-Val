@@ -159,7 +159,7 @@ rules:
     role: ship_to
     label: Ship To
     require: [contact_name, email, phone]
-    severity: MAJOR
+    severity: MINOR
     checklist_item: "Ship To - Contact: First and Last Name, Email, Phone #"
 
   # -- checkbox 6: End User --------------------------------------------------
@@ -193,7 +193,7 @@ rules:
     role: end_user
     label: End User
     require: [contact_name, email, phone]
-    severity: MAJOR
+    severity: MINOR
     checklist_item: "End User - Contact: First and Last Name, Email, Phone #"
 
   # -- checkbox 7: Reseller (when applicable, not for Direct Sales) ---------
@@ -210,7 +210,7 @@ rules:
     role: reseller
     label: Reseller
     require: [contact_name, email, phone]
-    severity: MAJOR
+    severity: MINOR
     checklist_item: >
       Reseller - Contact: First and Last Name, Email, Phone #. SKIPs on
       direct sales, where no reseller block exists.

@@ -374,7 +374,7 @@ class SalesforceClient:
         if os.environ.get("SF_ADAPT_DEMO_OPPORTUNITY", "true").lower() not in ("true", "1", "yes"):
             return
         body: dict[str, Any] = {
-            "po_to_f5__c": po_number,
+            "PO_to_F5__c": po_number,
         }
         try:
             resp = self._call("PATCH", f"/sobjects/Opportunity/{opp_id}", json_data=body)

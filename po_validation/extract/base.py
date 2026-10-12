@@ -88,7 +88,7 @@ TOTAL_PATTERNS: list[tuple[int, str]] = [
     (10, r"p\.?\s?o\.?\s*total(?:\s*in\s*[a-z .()]*)?"),
     (9,  r"grand\s*total"),
     (8,  r"order\s*total"),
-    (7,  r"total\s*\((?:USD|[A-Z]{3})\)"),
+    (7,  r"total\s*\((?:USD|[A-Z]{3}|\$)\)"),
     (7,  r"\btotal\s+(?:USD|EUR|GBP|SGD|CAD|AUD|[A-Z]{3})\b"),
     (7,  r"total\s*amount"),
     (6,  r"\btotal\s*:"),

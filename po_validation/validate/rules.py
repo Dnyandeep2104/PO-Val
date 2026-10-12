@@ -56,6 +56,8 @@ def field_present(ctx: Ctx, p: dict) -> Finding:
     if target is None:
         return _f(rid, Status.SKIP, sev, f"No {p.get('on', 'po')} to check {label} on.")
     val = getattr(target, p["field"], None)
+    if p["field"] == "po_total" and val in (None, "", []):
+        val = getattr(target, "computed_total", None)
     if val in (None, "", []):
         return _f(rid, Status.FAIL, sev, f"{label.capitalize()} is missing from the PO.")
     return _f(rid, Status.PASS, sev, f"{label.capitalize()} found: {val}", actual=val)
@@ -629,7 +631,8 @@ def party_contact_complete(ctx: Ctx, p: dict) -> Finding:
             best, best_gaps = x, gaps
     if not best_gaps:
         return _f(rid, Status.PASS, sev, f"{label} contact details complete.")
-    return _f(rid, Status.FAIL, sev,
+    stat = Status.WARN if sev == "MINOR" else Status.FAIL
+    return _f(rid, stat, sev,
               f"{label} ({best['name']}) is missing: {', '.join(best_gaps)}.",
               expected=sorted(require), actual=best.get("contact_name"))
 

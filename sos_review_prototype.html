@@ -1030,7 +1030,7 @@ textarea.modern-input {
   var SAMPLE_ORDERS = [];
 
   /* State Storage */
-  var STORAGE_KEY = "f5_sos_live_v5_state";
+  var STORAGE_KEY = "f5_sos_live_v6_state";
   var usdFormatter = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" });
   function fmtMoney(v) { return typeof v === "number" ? usdFormatter.format(v) : (v || ""); }
   function escapeHtml(str) { return String(str || "").replace(/[&<>"']/g, function(m) { return { "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[m]; }); }
