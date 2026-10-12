@@ -865,7 +865,7 @@ def main(argv=None) -> int:
     ap.add_argument("--reset", action="store_true", help="Clear portal orders and Azure blob state")
     ap.add_argument("--preload", metavar="DIR", help="Preload sample PO PDFs from directory before starting server")
     ap.add_argument("--backfill", action="store_true", help="Process existing blobs in container")
-    ap.add_argument("--inbox", metavar="DIR", help="Directory to monitor for incoming PO PDFs (defaults to ~/.po_validation/inbox)")
+    ap.add_argument("--inbox", metavar="DIR", help="Directory to monitor for incoming PO PDFs (defaults to out/inbox)")
     ap.add_argument("--no-folder", action="store_true", help="Disable local folder polling (use Azure Blob Storage / Direct UI upload only)")
     args = ap.parse_args(argv)
 
