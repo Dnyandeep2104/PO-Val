@@ -201,10 +201,14 @@ def result_to_portal_order(
 
     # Summary string
     pass_cnt = sum(1 for c in checklist if c[0] == "pass")
+    total_flags = len(flags)
     if pass_cnt == 11 and result.outcome == Outcome.VALIDATED:
         summary_str = f"All 11 SOS checklist items passed cleanly. Quote {po.quote_number or (q.quote_number if q else '')} matched 100%."
+    elif pass_cnt == 11 and total_flags > 0:
+        summary_str = f"11 of 11 PO document items verified, but {total_flags} CPQ quote reconciliation exception(s) flagged."
     else:
-        summary_str = f"{pass_cnt} of 11 SOS checklist items passed ({11 - pass_cnt} flagged). Pipeline outcome: {result.outcome.value}."
+        doc_fails = 11 - pass_cnt
+        summary_str = f"{pass_cnt} of 11 PO document items passed ({doc_fails} document exceptions, {total_flags} total exceptions)."
 
     return {
         "id": clean_id,

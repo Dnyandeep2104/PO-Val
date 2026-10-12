@@ -1067,6 +1067,23 @@ textarea.modern-input {
     setTimeout(function() { toast.classList.remove("visible"); }, 2800);
   }
 
+  function getReturnReason(o) {
+    var qc = o.quoteChecks || [];
+    var quoteExistsCheck = qc.find(function(c){ return c[1] === "CPQ Quote Exists"; });
+    if (!o.quote || (quoteExistsCheck && quoteExistsCheck[0] === "fail") || (o.summary && o.summary.indexOf("EXTRACTION_FAILED") > -1) || o.quote === "F5Q-99999999") {
+      return { badge: "🛑 QUOTE NOT FOUND", title: "Quote Not Found in CPQ", isQuoteMissing: true };
+    }
+    var flags = o.flags || [];
+    var blocker = flags.find(function(f){ return f.severity === "BLOCKER"; });
+    if (blocker) {
+      if (blocker.rule === "line_items_match") return { badge: "🛑 SKU MISMATCH", title: blocker.detail || "Line Item SKU Discrepancy", isQuoteMissing: false };
+      if (blocker.rule === "product_info_or_quote" || blocker.rule === "line_items_extracted") return { badge: "🛑 MISSING LINES", title: blocker.detail || "Product Lines Missing", isQuoteMissing: false };
+      if (blocker.rule === "bill_to_present" || blocker.rule === "ship_to_present") return { badge: "🛑 ADDRESS BLOCKED", title: blocker.detail || "Address Entity Missing", isQuoteMissing: false };
+      return { badge: "🛑 POLICY BLOCKED", title: blocker.detail || blocker.title, isQuoteMissing: false };
+    }
+    return { badge: "🛑 RESELLER ACTION", title: "Order Discrepancy Flagged", isQuoteMissing: false };
+  }
+
   /* ---------------------------------------------------------------- RENDER QUEUE */
   function renderQueueView() {
     var orders = appState.orders;
@@ -1116,10 +1133,13 @@ textarea.modern-input {
     html += '<div class="kpi-stat-footer"><span class="kpi-pill icon-amber">SOS Triage</span> Price/IncoTerms Exception</div>';
     html += '</div>';
 
+    var trulyMissingQuote = appState.orders.filter(function(o){ return o.status === "return" && getReturnReason(o).isQuoteMissing; }).length;
+    var policyBlocked = totalReturn - trulyMissingQuote;
+
     html += '<div class="kpi-stat-card card-red">';
-    html += '<div class="kpi-header"><span class="kpi-title">Quote Missing</span><div class="kpi-icon icon-red">🛑</div></div>';
+    html += '<div class="kpi-header"><span class="kpi-title">Blocked / Action</span><div class="kpi-icon icon-red">🛑</div></div>';
     html += '<div class="kpi-stat-value" style="color:var(--status-danger);">' + totalReturn + ' Blocked</div>';
-    html += '<div class="kpi-stat-footer"><span class="kpi-pill icon-red">Reseller Action</span> Auto-draft Discrepancy</div>';
+    html += '<div class="kpi-stat-footer"><span class="kpi-pill icon-red">Reseller Action</span> ' + trulyMissingQuote + ' No Quote &bull; ' + policyBlocked + ' Discrepancy</div>';
     html += '</div>';
 
     html += '<div class="kpi-stat-card card-navy">';
@@ -1162,9 +1182,14 @@ textarea.modern-input {
     } else {
       filtered.forEach(function(o) {
         var statusBadge = '<span class="status-pill status-ready">✓ READY TO BOOK</span>';
-        if (o.status === "review") statusBadge = '<span class="status-pill status-review">⚠️ NEEDS REVIEW (' + o.flags.length + ')</span>';
-        else if (o.status === "return") statusBadge = '<span class="status-pill status-return">🛑 QUOTE NOT FOUND</span>';
-        else if (o.status === "booked") statusBadge = '<span class="status-pill status-booked">✅ BOOKED IN SFDC</span>';
+        if (o.status === "review") {
+          statusBadge = '<span class="status-pill status-review">⚠️ NEEDS REVIEW (' + o.flags.length + ')</span>';
+        } else if (o.status === "return") {
+          var rr = getReturnReason(o);
+          statusBadge = '<span class="status-pill status-return">' + escapeHtml(rr.badge) + '</span>';
+        } else if (o.status === "booked") {
+          statusBadge = '<span class="status-pill status-booked">✅ BOOKED IN SFDC</span>';
+        }
 
         var orderTotal = o.booking ? o.booking.amount : o.compare.find(function(c){ return c[0].indexOf("Total") > -1; })[1];
 
@@ -1223,6 +1248,11 @@ textarea.modern-input {
     if (!isBooked) {
       if (o.status === "return") {
         html += '<button type="button" class="btn-action-outline" data-action="return" style="color:var(--status-danger);border-color:var(--status-danger-border);">✉️ Draft Reseller Return Email</button>';
+        if (openFlags.length === 0) {
+          html += '<button type="button" class="btn-action-primary" data-action="approve" style="background:var(--f5-blue-600);">⚡ Override &amp; Book to Salesforce</button>';
+        } else {
+          html += '<button type="button" class="btn-action-primary" disabled style="opacity:0.45;cursor:not-allowed;" title="Acknowledge policy exceptions below to enable override booking">⚡ Override &amp; Book (Locked)</button>';
+        }
       } else {
         html += '<button type="button" class="btn-action-outline" data-action="return">✉️ Return to Reseller</button>';
         html += '<button type="button" class="btn-action-primary" data-action="approve" ' + (!isApprovable ? 'disabled style="opacity:0.5;cursor:not-allowed;" title="Review all flagged exceptions first"' : '') + '>⚡ 1-Click Salesforce Booking</button>';
@@ -1234,9 +1264,11 @@ textarea.modern-input {
     html += '</div>';
 
     // Hero Title
+    var returnReason = getReturnReason(o);
+    var heroPillText = o.status === "ready" ? "✓ 100% MATCH" : (o.status === "review" ? "⚠️ EXCEPTION FLAGGED" : (o.status === "return" ? (returnReason.isQuoteMissing ? "🛑 INVALID QUOTE" : "🛑 POLICY BLOCKED") : "✅ BOOKED"));
     html += '<div class="detail-main-header">';
     html += '<div class="po-hero-title-group">';
-    html += '<h1>Purchase Order #' + escapeHtml(o.po) + ' <span class="status-pill ' + (o.status === "ready" ? "status-ready" : (o.status === "review" ? "status-review" : (o.status === "return" ? "status-return" : "status-booked"))) + '">' + (o.status === "ready" ? "✓ 100% MATCH" : (o.status === "review" ? "⚠️ EXCEPTION FLAGGED" : (o.status === "return" ? "🛑 INVALID QUOTE" : "✅ BOOKED"))) + '</span></h1>';
+    html += '<h1>Purchase Order #' + escapeHtml(o.po) + ' <span class="status-pill ' + (o.status === "ready" ? "status-ready" : (o.status === "review" ? "status-review" : (o.status === "return" ? "status-return" : "status-booked"))) + '">' + heroPillText + '</span></h1>';
     html += '<p class="po-hero-sub">' + escapeHtml(o.from) + ' (' + escapeHtml(o.channel) + ') &bull; PO Date: ' + escapeHtml(o.poDate) + ' &bull; Ingest Source: <code>' + escapeHtml(o.file) + '</code></p>';
     html += '</div>';
     html += '</div>';
@@ -1271,8 +1303,13 @@ textarea.modern-input {
       html += '<div><strong>✓ Ready for Immediate Booking:</strong> 100% reconciliation against CPQ quote ' + escapeHtml(o.quote) + '. Click "1-Click Salesforce Booking" above.</div>';
       html += '</div>';
     } else if (o.status === "return") {
+      var rr = getReturnReason(o);
       html += '<div class="alert-callout-box alert-return">';
-      html += '<div><strong>🛑 Non-Bookable Order:</strong> Referenced quote ' + escapeHtml(o.quote) + ' does not exist in F5 CPQ database. Discrepancy email drafted below.</div>';
+      if (rr.isQuoteMissing) {
+        html += '<div><strong>🛑 Non-Bookable Order:</strong> Referenced quote ' + escapeHtml(o.quote || 'N/A') + ' does not exist in F5 CPQ database. Discrepancy email drafted below.</div>';
+      } else {
+        html += '<div><strong>🛑 Policy Blocked Order:</strong> Quote ' + escapeHtml(o.quote) + ' was resolved in CPQ, but the order is blocked by policy: ' + escapeHtml(rr.title) + '. Reseller correction email drafted below.</div>';
+      }
       html += '</div>';
     }
 
@@ -1967,9 +2004,13 @@ textarea.modern-input {
             if (!lo.reviewedFlags) lo.reviewedFlags = [];
           });
 
+          var prevSig = (appState.orders || []).map(function(o){ return o.id + ":" + o.status; }).join(",");
+          var newSig = liveOrders.map(function(o){ return o.id + ":" + o.status; }).join(",");
           appState.orders = liveOrders;
           saveState();
-          updateApp();
+          if (prevSig !== newSig && appState.view.type !== "detail") {
+            updateApp();
+          }
         }
       })
       .catch(function(err) { console.debug("API orders check: ", err); });
@@ -2016,8 +2057,12 @@ textarea.modern-input {
           var order = (msg.data && msg.data.order) || msg.order;
           if (order) {
             order.isLive = true;
+            (order.flags || []).forEach(function(f, idx) {
+              if (!f.id) f.id = "flag_" + (f.rule || "item") + "_" + idx;
+            });
             appState.orders = appState.orders.filter(function(x){ return x.id !== order.id; });
             appState.orders.unshift(order);
+            saveState();
             updateApp();
             if (bannerText) bannerText.innerHTML = "✨ <strong>PO #" + escapeHtml(order.po) + "</strong> from <strong>" + escapeHtml(order.from) + "</strong> validated &amp; ready for 1-Click Salesforce Booking!";
             if (progFill) progFill.style.width = "100%";
@@ -2036,6 +2081,7 @@ textarea.modern-input {
             target.sfdcRecordId = msg.data.booking_form_id;
             target.sfdcRecordUrl = msg.data.url;
             target.pdfAttached = msg.data.pdf_attached;
+            saveState();
             updateApp();
           }
         }

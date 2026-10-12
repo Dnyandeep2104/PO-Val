@@ -49,7 +49,8 @@ HEADER_SYNONYMS: dict[str, list[str]] = {
         r"item", r"item\s*#", r"pos", r"no\.?", r"#", r"seq", r"s\.?no\.?",
     ],
     "part_number": [
-        r"part\s*(?:#|no\.?|number)?", r"part\s*#\s*/\s*description",
+        r"(?:item\s*\.?\s*)?part\s*(?:#|no\.?|number)?", r"item\.?part.*",
+        r"part\s*#\s*/\s*description",
         r"item\s*(?:code|number)", r"product\s*(?:code|number|#|id)?",
         r"material(?:\s*(?:no\.?|number))?", r"sku", r"model",
         r"vendor\s*item\s*#?", r"mfr\.?\s*part(?:\s*#)?", r"catalog(?:\s*#)?",
