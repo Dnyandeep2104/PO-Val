@@ -37,7 +37,7 @@ log = logging.getLogger(__name__)
 # (1,858.2550) and the prototype's \d{2} anchor silently dropped them.
 MONEY_RE = re.compile(
     r"^\(?\s*(?:USD|EUR|GBP|CAD|AUD|SGD|JPY|CHF|INR)?\s*[\$€£¥]?\s*"
-    r"-?\d{1,3}(?:,\d{3})*(?:\.\d{1,6})?\s*\)?$")
+    r"-?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d{1,6})?\s*\)?$")
 # Must contain a decimal point or a thousands separator to count as money;
 # stops bare integers like a line number being read as a price.
 MONEYISH_RE = re.compile(r"\d[\d,]*\.\d{1,6}|\d{1,3}(?:,\d{3})+")

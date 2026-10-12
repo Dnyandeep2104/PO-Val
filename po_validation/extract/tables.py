@@ -73,7 +73,7 @@ HEADER_SYNONYMS: dict[str, list[str]] = {
     ],
     "unit_price": [
         r"unit\s*(?:price|cost)", r"unit\s*net", r"price\s*(?:each|/\s*ea)?",
-        r"each", r"rate", r"unit", r"list\s*price",
+        r"each", r"rate", r"list\s*price",
         r"unit\s*sell", r"price", r"cost",
     ],
     "total_price": [
@@ -338,6 +338,8 @@ def find_regions(view: PdfView, min_score: int = 6) -> list[Region]:
     header_keys, footer_keys = view.furniture
     regions: list[Region] = []
 
+    prev_region: Optional[Region] = None
+
     for page in view.pages:
         rows = page.rows
         candidates: list[tuple[int, dict, list[Row], int]] = []
@@ -350,20 +352,41 @@ def find_regions(view: PdfView, min_score: int = 6) -> list[Region]:
         # matters: a weak pseudo-header a line or two above the real one
         # would otherwise consume it and the strong header would never be
         # tried. Score decides, not document order.
-        if not candidates:
-            continue
-        best_score = max(c[3] for c in candidates)
         header_positions: list[tuple[int, dict, list[Row], int]] = []
-        for cand in sorted(candidates, key=lambda c: (-c[3], c[0])):
-            if cand[3] < best_score - 3:
-                continue
-            # Drop candidates that start inside an already-accepted header.
-            if any(kept[0] <= cand[0] < kept[0] + len(kept[2])
-                   or cand[0] <= kept[0] < cand[0] + len(cand[2])
-                   for kept in header_positions):
-                continue
-            header_positions.append(cand)
-        header_positions.sort(key=lambda c: c[0])
+        if candidates:
+            best_score = max(c[3] for c in candidates)
+            for cand in sorted(candidates, key=lambda c: (-c[3], c[0])):
+                if cand[3] < best_score - 3:
+                    continue
+                # Drop candidates that start inside an already-accepted header.
+                if any(kept[0] <= cand[0] < kept[0] + len(kept[2])
+                       or cand[0] <= kept[0] < cand[0] + len(cand[2])
+                       for kept in header_positions):
+                    continue
+                header_positions.append(cand)
+            header_positions.sort(key=lambda c: c[0])
+
+        # If a table region on a previous page continued, rows at the top of this
+        # page before any new header (or the whole page if no header exists) are
+        # continuation rows.
+        first_header_idx = header_positions[0][0] if header_positions else len(rows)
+        if prev_region is not None and first_header_idx > 0:
+            cont_rows = []
+            for r in rows[:first_header_idx]:
+                if any(x in r.text for x in [
+                    "CONTINUED ON NEXT PAGE", "MERCHANDISE SHIPPED", "P.O. NUMBER",
+                    "SHIPPING INSTRUCTIONS", "VENDOR #", "PURCHASE ORDER",
+                ]):
+                    if any(x in r.text for x in ["CONTINUED", "MERCHANDISE", "P.O. NUMBER"]):
+                        break
+                    continue
+                if STOP_RE.match(r.norm()):
+                    break
+                if r.norm() in footer_keys:
+                    continue
+                cont_rows.append(r)
+            if cont_rows and any(is_anchor(r, prev_region.columns) for r in cont_rows):
+                regions.append(Region(page.index, [], prev_region.columns, cont_rows, prev_region.score))
 
         for n, (start, columns, hrows, score) in enumerate(header_positions):
             body_start = start + len(hrows)
@@ -371,6 +394,8 @@ def find_regions(view: PdfView, min_score: int = 6) -> list[Region]:
                         if n + 1 < len(header_positions) else len(rows))
             body = []
             for r in rows[body_start:body_end]:
+                if any(x in r.text for x in ["CONTINUED ON NEXT PAGE", "MERCHANDISE SHIPPED"]):
+                    break
                 if STOP_RE.match(r.norm()):
                     break
                 if r.norm() in footer_keys:
@@ -379,7 +404,9 @@ def find_regions(view: PdfView, min_score: int = 6) -> list[Region]:
             if body:
                 cols = retype_by_content(
                     expand_combined(widen(columns, page.width)), body)
-                regions.append(Region(page.index, hrows, cols, body, score))
+                reg = Region(page.index, hrows, cols, body, score)
+                regions.append(reg)
+                prev_region = reg
     return regions
 
 
@@ -517,12 +544,21 @@ def pick_part_number(record: list[Row], cols: dict[str, Column]) -> Optional[str
         return out
 
     candidates = skus(part_band)
+    desc_candidates = skus(desc_band)
+
+    # If the description has a genuine F5 SKU (e.g. F5-V-O-ALL-BASE-PKG), prefer that
+    # over a distributor's internal item code in part_band (e.g. F5_F5VOALLBASEPKG).
+    strict_desc = [c for c in desc_candidates if STRICT_F5_RE.match(c)]
+    strict_part = [c for c in candidates if STRICT_F5_RE.match(c)]
+    if strict_desc and not strict_part:
+        return max(strict_desc, key=len)
+
     # Only look in the description when the part column is genuinely empty,
     # or when the two share one band. Ariba prints "Not Available" as the
     # part number; scavenging a token out of the description there invents
     # a SKU that is not on the document ("QSFP28" from the product blurb).
     if not candidates and not shares_band and not part_band:
-        candidates = skus(desc_band)
+        candidates = desc_candidates
 
     if not candidates:
         return None
@@ -657,6 +693,11 @@ def read_records(view: PdfView) -> tuple[list[dict], dict]:
                 qty_candidates(rec, region.columns),
                 money_candidates(rec, region.columns, "total_price"))
 
+            # Drop footer, copyright, and pagination rows (e.g. Silicon21 copyright)
+            raw_full = " ".join(r.text for r in rec).lower()
+            if any(k in raw_full for k in ("copyright", "all rights reserved", "©", "page 1 of", "page 2 of")):
+                continue
+
             # Keep a record with no SKU as long as it has commercial
             # substance. Ariba prints "Not Available" as the part number,
             # and the checklist explicitly covers that case: the quote
@@ -665,6 +706,12 @@ def read_records(view: PdfView) -> tuple[list[dict], dict]:
             if part is None and qty is None and total is None:
                 continue
             if part is None and total is None:
+                continue
+            if part is None and qty is None and unit is None:
+                continue
+            # A line item must have commercial substance: either a total price, a unit price,
+            # or an identifiable F5 SKU.
+            if total is None and unit is None and not (part and STRICT_F5_RE.match(part)):
                 continue
 
             items.append({

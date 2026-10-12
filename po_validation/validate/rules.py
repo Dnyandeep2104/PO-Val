@@ -298,7 +298,7 @@ def _match_lines_by_amount(ctx: Ctx, p: dict) -> list[Finding]:
             f"matching amount on the PO. Partial order?",
             expected=str(ql.total_price), line_ref=ql.part_number))
 
-    if not findings and matched_pairs:
+    if not any(f.status == Status.FAIL for f in findings) and matched_pairs:
         pairs_str = ", ".join(f"{q.part_number}={po.total_price}" for po, q in matched_pairs)
         findings.append(_f(
             rid, Status.PASS, sev,
@@ -331,7 +331,28 @@ def line_items_match(ctx: Ctx, p: dict) -> list[Finding]:
     if not any(_is_f5_sku(li.part_number) for li in ctx.po.line_items):
         return _match_lines_by_amount(ctx, p)
 
-    po_agg = _aggregate(ctx.po.line_items)
+    # Map reseller-prefixed or hyphenless SKUs on PO lines to matching quote SKUs
+    # (e.g. F5_F5VOADNMSHPUBLB -> F5-V-O-ADN-MSH-PUBLB)
+    def _norm_sku(s: Optional[str]) -> str:
+        clean = re.sub(r"[^A-Za-z0-9]", "", s or "").upper()
+        if clean.startswith("F5F5"):
+            clean = clean[2:]
+        return clean
+
+    quote_skus = {ql.part_number for ql in ctx.quote.lines if ql.part_number}
+    norm_to_quote = {_norm_sku(qs): qs for qs in quote_skus}
+
+    mapped_po_lines = []
+    for li in ctx.po.line_items:
+        if li.part_number and _norm_sku(li.part_number) in norm_to_quote:
+            import copy
+            li_mapped = copy.copy(li)
+            li_mapped.part_number = norm_to_quote[_norm_sku(li.part_number)]
+            mapped_po_lines.append(li_mapped)
+        else:
+            mapped_po_lines.append(li)
+
+    po_agg = _aggregate(mapped_po_lines)
     q_agg = _aggregate(ctx.quote.lines)
 
     findings: list[Finding] = []
@@ -438,7 +459,49 @@ def line_items_match(ctx: Ctx, p: dict) -> list[Finding]:
                     f"the PO nor netted into a line price.", expected=str(c["total"]),
                     line_ref=part))
 
-    # 4. A PO SKU that is not on the quote, where the quote has a different
+    # 4. Pass-through freight/shipping lines on the PO.
+    for part, on_po in list(extras.items()):
+        po_match_lis = [li for li in ctx.po.line_items if li.part_number == part or li.description == part]
+        if po_match_lis and any(_is_freight_line(li) for li in po_match_lis):
+            extras.pop(part)
+            notes.append(f"PO line '{part}' ({on_po['total']}) is a pass-through shipping/freight charge; Note to RO: Carrier Information required")
+
+    # 5. Normalized SKU matching (reseller prefixes like F5_ or punctuation differences).
+    def _norm_sku(s: Optional[str]) -> str:
+        clean = re.sub(r"[^A-Za-z0-9]", "", s or "").upper()
+        if clean.startswith("F5F5"):
+            clean = clean[2:]
+        return clean
+
+    for part, on_po in list(extras.items()):
+        norm_p = _norm_sku(part)
+        twin = next((q for q in missing if _norm_sku(q) == norm_p), None)
+        if twin:
+            q_info = missing.pop(twin)
+            extras.pop(part)
+            delta = (on_po["total"] or Decimal("0")) - (q_info["total"] or Decimal("0"))
+            if abs(delta) <= tol and (q_info["qty"] is None or on_po["qty"] is None or q_info["qty"] == on_po["qty"]):
+                matched += 1
+                notes.append(f"SKU {part} matches {twin} (reseller prefix format)")
+            else:
+                findings.append(_f(
+                    rid, Status.FAIL, sev,
+                    f"SKU {part} matches {twin} but differs in price or qty (delta: {delta:+}).",
+                    expected=str(q_info["total"]), actual=str(on_po["total"]), delta=str(delta), line_ref=part))
+
+    # 6. Nominal penny lines ($0.01) on PO matching included $0 lines on quote.
+    for part, on_po in list(extras.items()):
+        if on_po.get("total") is not None and abs(on_po["total"]) <= Decimal("0.05"):
+            norm_p = _norm_sku(part)
+            twin = next((q for q, info in missing.items()
+                         if _norm_sku(q) == norm_p and (info.get("total") == Decimal("0") or info.get("total") is None)), None)
+            if twin:
+                missing.pop(twin)
+                extras.pop(part)
+                matched += 1
+                notes.append(f"SKU {part} ({on_po['total']}) accepted as nominal token for included $0 quote line {twin}")
+
+    # 7. A PO SKU that is not on the quote, where the quote has a different
     #    SKU at the same price and quantity, is almost always a typo or a
     #    SKU revision (4661555: F5-ADD-BIG-R56R59B vs F5-ADD-BIG-R56R59).
     #    That is a question for SOS, not grounds to return the PO.
@@ -660,6 +723,16 @@ def party_present(ctx: Ctx, p: dict) -> Finding:
     found = ctx.po.parties_of(role)
     named = [x for x in found if x.get("name")]
     if not named:
+        if role in ("end_user", "reseller"):
+            if ctx.quote and getattr(ctx.quote, "sell_through_type", "").lower() == "direct":
+                return _f(rid, Status.PASS, sev,
+                          f"Direct sale: {label} not required as a separate block.")
+            if role == "end_user":
+                bill_tos = [x for x in ctx.po.parties_of("bill_to") if x.get("name")]
+                if bill_tos and ctx.quote and ctx.quote.end_user_name:
+                    if _sim(_norm_name(bill_tos[0]["name"]), _norm_name(ctx.quote.end_user_name)) >= 0.5:
+                        return _f(rid, Status.PASS, sev,
+                                  f"End User: {bill_tos[0]['name']} (direct buyer)")
         return _f(rid, Status.FAIL, sev,
                   f"No {label} block with a clearly labelled entity name.")
     return _f(rid, Status.PASS, sev,
@@ -986,7 +1059,7 @@ def _norm_name(name: Optional[str]) -> str:
 
 
 def _is_f5_sku(part: Optional[str]) -> bool:
-    return bool(part and re.match(r"^F5[N]?-", part, re.I))
+    return bool(part and re.match(r"^F5[N]?[-_]", part, re.I))
 
 
 def _terms_days(terms: Optional[str]) -> Optional[int]:
@@ -1026,13 +1099,18 @@ def _canon(name: Optional[str]) -> str:
 
 
 def name_similarity(a: Optional[str], b: Optional[str]) -> float:
-    """Token overlap, 0..1. Deliberately not a fuzzy string distance:
-    company names differ by whole words ('NTT America' vs 'NTT America
-    Solutions'), not by character edits."""
-    ta, tb = set(_canon(a).split()), set(_canon(b).split())
-    if not ta or not tb:
+    """Token overlap and sequence similarity, 0..1. Deliberately robust to
+    both whole-word variations ('NTT America' vs 'NTT America Solutions')
+    and PDF-typesetting kerning splits ('LifeI nsurance' vs 'Life Insurance')."""
+    import difflib
+    ca, cb = _canon(a), _canon(b)
+    if not ca or not cb:
         return 0.0
-    return len(ta & tb) / min(len(ta), len(tb))
+    ta, tb = set(ca.split()), set(cb.split())
+    token_score = len(ta & tb) / min(len(ta), len(tb)) if (ta and tb) else 0.0
+    seq_score = difflib.SequenceMatcher(None, ca, cb).ratio()
+    nospace_score = difflib.SequenceMatcher(None, ca.replace(" ", ""), cb.replace(" ", "")).ratio()
+    return max(token_score, seq_score, nospace_score)
 
 
 @rule("party_matches_reference")

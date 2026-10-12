@@ -2090,9 +2090,19 @@ textarea.modern-input {
       }
     };
 
+    var pollTimer = null;
+    evtSource.onopen = function() {
+      if (pollTimer) {
+        clearInterval(pollTimer);
+        pollTimer = null;
+      }
+    };
+
     evtSource.onerror = function() {
-      // Periodic poll fallback
-      setInterval(syncLiveOrders, 4000);
+      // Periodic poll fallback if stream drops (single guarded interval)
+      if (!pollTimer) {
+        pollTimer = setInterval(syncLiveOrders, 5000);
+      }
     };
   }
 

@@ -175,16 +175,35 @@ class LivePOService:
         self,
         pipeline: Optional[Pipeline] = None,
         salesforce_client: Optional[SalesforceClient] = None,
-        inbox_dir: Path = Path("inbound_pos"),
+        inbox_dir: Optional[Union[Path, str]] = None,
         order_store: Optional[OrderStore] = None,
         backfill_blob: bool = False,
+        enable_folder_watcher: bool = True,
     ):
         load_env_file()
-        self.inbox_dir = inbox_dir
-        self.inbox_dir.mkdir(parents=True, exist_ok=True)
-        self.ingested_pdf_dir = Path("out/ingested_pos")
+        env_inbox = os.environ.get("PO_INBOX_DIR")
+        if inbox_dir:
+            self.inbox_dir = Path(inbox_dir)
+        elif env_inbox:
+            self.inbox_dir = Path(env_inbox)
+        else:
+            # Scoped under git-ignored out/ directory so it never pollutes the repo root
+            self.inbox_dir = Path("out/inbox")
+
+        self.enable_folder_watcher = enable_folder_watcher and (
+            os.environ.get("PO_ENABLE_FOLDER_WATCHER", "true").lower() in ("true", "1", "yes")
+        )
+        if self.enable_folder_watcher:
+            self.inbox_dir.mkdir(parents=True, exist_ok=True)
+
+        env_pdf_dir = os.environ.get("PO_STORAGE_DIR")
+        if env_pdf_dir:
+            self.ingested_pdf_dir = Path(env_pdf_dir)
+        else:
+            self.ingested_pdf_dir = Path("out/ingested_pos")
         self.ingested_pdf_dir.mkdir(parents=True, exist_ok=True)
 
+        self.backfill_blob = backfill_blob
         self.store = order_store or OrderStore()
         self.bus = EventBus()
         self.sf = salesforce_client or SalesforceClient.from_env()
@@ -449,20 +468,25 @@ class LivePOService:
 
     # ------------------------------------------------------- Background Watchers
     def _inbox_folder_worker(self):
-        """Monitors local inbound_pos/ folder for dropped PDFs."""
-        seen_files: set[str] = set()
-        log.info("📁 Local Inbound Watcher active on %s/", self.inbox_dir)
+        """Monitors external inbox folder for dropped PDFs and archives them after intake."""
+        if not self.enable_folder_watcher or not self.inbox_dir.exists():
+            return
+        archive_dir = self.inbox_dir / "processed"
+        archive_dir.mkdir(parents=True, exist_ok=True)
+        log.info("📁 External Inbound Watcher active on %s/", self.inbox_dir)
         while self._running:
             try:
-                for pdf in self.inbox_dir.glob("*.pdf"):
+                for pdf in list(self.inbox_dir.glob("*.pdf")):
                     fname = pdf.name
-                    if fname in seen_files:
-                        continue
-                    # Wait briefly for full copy
                     time.sleep(0.5)
-                    data = pdf.read_bytes()
-                    seen_files.add(fname)
-                    self.process_document(data, fname, source_label="Email Inbound (Folder)")
+                    try:
+                        data = pdf.read_bytes()
+                        self.process_document(data, fname, source_label="Email Inbound (Folder)")
+                        # Move to processed archive so the inbox folder never accumulates files
+                        dest = archive_dir / f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{fname}"
+                        pdf.rename(dest)
+                    except Exception as err:
+                        log.warning("Could not process or archive %s: %s", fname, err)
             except Exception as exc:
                 log.debug("Inbox worker tick: %s", exc)
             time.sleep(2.0)
@@ -517,9 +541,12 @@ class LivePOService:
     def start_background_watchers(self):
         """Starts background intake threads for local folder and Azure Blob."""
         self._running = True
-        t_folder = threading.Thread(target=self._inbox_folder_worker, daemon=True, name="InboxFolderWatcher")
+        self._threads = []
+        if self.enable_folder_watcher:
+            t_folder = threading.Thread(target=self._inbox_folder_worker, daemon=True, name="InboxFolderWatcher")
+            self._threads.append(t_folder)
         t_blob = threading.Thread(target=self._azure_blob_worker, daemon=True, name="AzureBlobWatcher")
-        self._threads = [t_folder, t_blob]
+        self._threads.append(t_blob)
         for t in self._threads:
             t.start()
 

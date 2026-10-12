@@ -433,11 +433,27 @@ def generate_dashboard_html(manager: ApprovalManager) -> str:
 </html>"""
 
 
+class SOSPortalServer(http.server.ThreadingHTTPServer):
+    daemon_threads = True
+
+    def handle_error(self, request, client_address):
+        exc_type, _, _ = sys.exc_info()
+        if exc_type in (BrokenPipeError, ConnectionResetError):
+            return
+        super().handle_error(request, client_address)
+
+
 class SOSPortalHandler(http.server.SimpleHTTPRequestHandler):
     """Handles HTTP requests for the SOS web approval portal."""
 
     manager: ApprovalManager = None
     service: Optional[LivePOService] = None
+
+    def handle_one_request(self):
+        try:
+            super().handle_one_request()
+        except (BrokenPipeError, ConnectionResetError):
+            pass
 
     def do_GET(self):
         parsed = urllib.parse.urlparse(self.path)
@@ -785,9 +801,9 @@ def run_preflight(live: bool = False) -> int:
         print("  \033[33m--\033[0m  Azure Blob   Unconfigured / placeholder in .env (Set AZURE_STORAGE_SAS_TOKEN for live email intake).")
 
     # 4. Folder
-    inbox = Path("inbound_pos")
-    inbox.mkdir(parents=True, exist_ok=True)
-    print(f"  \033[32mOK\033[0m  Folder       Drop PDFs into {inbox}/")
+    env_inbox = os.environ.get("PO_INBOX_DIR")
+    inbox = Path(env_inbox) if env_inbox else Path("out/inbox")
+    print(f"  \033[32mOK\033[0m  Folder       Inbox drop directory: {inbox}/ (git-ignored)")
 
     print()
     return 0 if all_ok else 1
@@ -799,9 +815,16 @@ def run_server(
     live_service: Optional[LivePOService] = None,
     preload_folder: Optional[str] = None,
     backfill: bool = False,
+    inbox_dir: Optional[str] = None,
+    no_folder: bool = False,
 ):
     if live_service is None:
-        live_service = LivePOService(salesforce_client=manager.sf, backfill_blob=backfill)
+        live_service = LivePOService(
+            salesforce_client=manager.sf,
+            backfill_blob=backfill,
+            inbox_dir=inbox_dir,
+            enable_folder_watcher=(not no_folder),
+        )
     if preload_folder:
         loaded = live_service.preload(preload_folder)
         log.info("Preloaded %d sample order(s) from %s", loaded, preload_folder)
@@ -811,13 +834,14 @@ def run_server(
     SOSPortalHandler.service = live_service
 
     # Bind strictly to localhost (127.0.0.1) using ThreadingHTTPServer for SSE concurrency
-    with http.server.ThreadingHTTPServer(("127.0.0.1", port), SOSPortalHandler) as httpd:
+    with SOSPortalServer(("127.0.0.1", port), SOSPortalHandler) as httpd:
         sf_mode = "LIVE (Sandbox poclab)" if not manager.sf.dry_run else "SIMULATION (Dry-Run / Demo-Safe)"
+        watcher_info = f"Polling {live_service.inbox_dir}/" if live_service.enable_folder_watcher else "Folder polling disabled"
         print(f"\n🚀 RevOps SOS Executive Portal running at http://127.0.0.1:{port}")
         print(f"   • Dashboard UI:     http://127.0.0.1:{port}/")
         print(f"   • Real-Time Stream: http://127.0.0.1:{port}/api/stream")
         print(f"   • Salesforce Mode:  {sf_mode}")
-        print(f"   • Inbound Watcher:  Polling inbound_pos/ and Azure Blob Storage")
+        print(f"   • Inbound Watcher:  {watcher_info} & Azure Blob Storage")
         print("   Press Ctrl+C to stop.\n")
         try:
             httpd.serve_forever()
@@ -841,6 +865,8 @@ def main(argv=None) -> int:
     ap.add_argument("--reset", action="store_true", help="Clear portal orders and Azure blob state")
     ap.add_argument("--preload", metavar="DIR", help="Preload sample PO PDFs from directory before starting server")
     ap.add_argument("--backfill", action="store_true", help="Process existing blobs in container")
+    ap.add_argument("--inbox", metavar="DIR", help="Directory to monitor for incoming PO PDFs (defaults to ~/.po_validation/inbox)")
+    ap.add_argument("--no-folder", action="store_true", help="Disable local folder polling (use Azure Blob Storage / Direct UI upload only)")
     args = ap.parse_args(argv)
 
     if args.preflight:
@@ -857,7 +883,14 @@ def main(argv=None) -> int:
     manager = ApprovalManager(queue_dir=args.queue_dir, salesforce_client=sf_client)
 
     if args.serve:
-        run_server(manager, port=args.port, preload_folder=args.preload, backfill=args.backfill)
+        run_server(
+            manager,
+            port=args.port,
+            preload_folder=args.preload,
+            backfill=args.backfill,
+            inbox_dir=args.inbox,
+            no_folder=args.no_folder,
+        )
         return 0
 
     if args.approve:

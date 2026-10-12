@@ -32,12 +32,12 @@ from .layout import EMAIL_RE, PHONE_RE, PdfView, Row, Word
 PARTY_LABELS: dict[str, list[str]] = {
     "sold_to": [r"vendor\s*address", r"sold\s*to", r"vendor\s*name",
                 r"vendor", r"to", r"supplier", r"seller"],
-    "bill_to": [r"bill\s*to", r"billing\s*address", r"invoice\s*to",
-                r"bill\s*to\s*address", r"bill\s*to\s*name",
-                r"send\s*invoices?\s*to"],
+    "bill_to": [r"bill[-\s]*to(?:[-\s]*address)?", r"billing\s*address", r"invoice\s*to",
+                r"bill\s*to\s*name", r"send\s*invoices?\s*to", r".*bill[-\s]*to.*"],
     "ship_to": [r"ship\s*to", r"ship\s*all\s*items\s*to", r"deliver\s*to",
                 r"shipping\s*address", r"delivery\s*address",
-                r"ship\s*to\s*address", r"ship\s*to\s*customer\s*name"],
+                r"ship\s*to\s*address", r"ship\s*to\s*customer\s*name",
+                r"bill\s*/\s*ship\s*to"],
     "end_user": [r"end\s*user", r"end\s*customer", r"end\s*user\s*info",
                  r"ship\s*to\s*/\s*end\s*user\s*info", r"ship\s*to\s*/\s*end\s*user",
                  r"end\s*customer\s*name", r"end\s*user\s*company\s*name",
@@ -292,13 +292,35 @@ def _labels_in_row(row: Row) -> list[tuple[str, str, float, float]]:
     return sorted(out, key=lambda f: f[2])
 
 
+def _normalize_row_words(row: Row) -> Row:
+    new_words = []
+    for w in row.words:
+        if ":" in w.text and not w.text.endswith(":") and not w.text.startswith("http") and not re.match(r"^\d+:\d+", w.text):
+            idx = w.text.find(":") + 1
+            w1_text = w.text[:idx]
+            w2_text = w.text[idx:]
+            split_x = w.x0 + (w.x1 - w.x0) * (len(w1_text) / max(len(w.text), 1))
+            new_words.append(Word(w1_text, w.x0, split_x, w.top, w.bottom))
+            new_words.append(Word(w2_text, split_x, w.x1, w.top, w.bottom))
+        elif "/" in w.text and any(k in w.text.lower() for k in ["bill", "ship"]):
+            parts = w.text.split("/")
+            cur_x = w.x0
+            dx = (w.x1 - w.x0) / max(len(parts), 1)
+            for part in parts:
+                new_words.append(Word(part, cur_x, cur_x + dx, w.top, w.bottom))
+                cur_x += dx
+        else:
+            new_words.append(w)
+    return Row(new_words, row.top, row.bottom)
+
+
 def extract_parties(view: PdfView, max_lines: int = 16) -> list[Party]:
     header_keys, _ = view.furniture
     parties: list[Party] = []
     seen_blocks: set[tuple] = set()
 
     for page in view.pages:
-        rows = page.rows
+        rows = [_normalize_row_words(r) for r in page.rows]
         for i, row in enumerate(rows):
             labels = _labels_in_row(row)
             if not labels:

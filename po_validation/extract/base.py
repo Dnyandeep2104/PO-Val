@@ -19,8 +19,12 @@ from . import parties as party_mod
 from .layout import PdfView, to_decimal
 from .tables import read_records
 
-QUOTE_RE = r"\bF5Q-\d{8}\b"
-QUOTE_LOOSE_RE = r"\bF5Q\s?[-\u2013\u2014_.]?\s?\d{8}\b"
+QUOTE_RE = r"(?:(?<=[^\w])|^|(?<=QUOTE))F5\s*[-–—_]?\s*Q\s*[-–—_.]?\s*\d{7,8}(?=[^\d]|$)"
+QUOTE_LOOSE_RE = (
+    r"(?:(?<=[^\w])|^|(?<=QUOTE))F5\s*[-–—_]?\s*Q\s*[-–—_.]?\s*\d{7,8}(?=[^\d]|$)"
+    r"|(?:Quote\s*(?:#|no\.?|number)?\s*[:\-]?\s*|\bQuote#\s*)\d{6,8}"
+    r"|\b(?:QSA|QUO)[-_]?\d{6,8}\b"
+)
 
 # The four F5 contracting entities named at the top of the checklist.
 F5_ENTITIES: list[tuple[str, str]] = [
@@ -164,14 +168,20 @@ class BaseExtractor:
 
     def all_quote_numbers(self, view: PdfView) -> list[str]:
         # Resellers type the CPQ number freehand: 'F5Q 01271679',
-        # 'F5Q01271679', 'F5Q–01271679'. All are the same quote; normalise
-        # to the canonical form the quote lookup expects.
+        # 'F5Q01271679', 'F5Q–01271679', or wrapped across lines. All are the
+        # same quote; normalise to the canonical form the quote lookup expects.
         out: list[str] = []
-        for raw in view.find_all(QUOTE_LOOSE_RE):
-            digits = re.sub(r"\D", "", raw)[-8:]
-            q = f"F5Q-{digits}"
-            if q not in out:
-                out.append(q)
+        repaired_text = re.sub(
+            r"(Quote\s*#?\s*\d{6})\s*\n\s*(\d{1,2})", r"\1\2",
+            view.raw_text, flags=re.I)
+        for hay in (repaired_text, view.text, view.layout_text):
+            for m in re.finditer(QUOTE_LOOSE_RE, hay, re.I):
+                raw = m.group(0)
+                qm = re.search(r"(?:Q|QUO|QSA|Quote\s*#?)\s*[-_.]?\s*(\d{6,8})", raw, re.I)
+                if qm:
+                    q = f"F5Q-{qm.group(1).zfill(8)}"
+                    if q not in out:
+                        out.append(q)
         return out
 
     def po_number(self, view: PdfView) -> Optional[str]:
@@ -261,6 +271,8 @@ class BaseExtractor:
         """
         candidates = self.total_candidates(view)
         if not candidates:
+            if line_sum is not None and line_sum > 0:
+                return line_sum
             return None
         # Prefer the candidate the line items agree with. Dell's PO prints
         # "Grand Total: $81,019.50" (tax included) and "Amount: $74,844.80"
