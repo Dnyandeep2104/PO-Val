@@ -32,20 +32,31 @@ from .layout import EMAIL_RE, PHONE_RE, PdfView, Row, Word
 PARTY_LABELS: dict[str, list[str]] = {
     "sold_to": [r"vendor\s*address", r"sold\s*to", r"vendor\s*name",
                 r"vendor", r"to", r"supplier", r"seller"],
-    "bill_to": [r"bill[-\s]*to(?:[-\s]*address)?", r"billing\s*address", r"invoice\s*to",
-                r"bill\s*to\s*name", r"send\s*invoices?\s*to", r".*bill[-\s]*to.*"],
-    "ship_to": [r"ship\s*to", r"ship\s*all\s*items\s*to", r"deliver\s*to",
+    "freight_bill_to": [r"freight\s*bill\s*to"],
+    "bill_to": [r"(?:please\s+)?(?:(?:regd|corp)[-/\s]*)*bill[-\s]*to(?:[-/\s]*(?:company\s*name|address|customer\s*name))?",
+                r"(?:please\s+submit\s+)?(?:invoices?\s+to|send\s+invoices?\s+to)",
+                r"(?:please\s+)?bill[-\s]*to(?:\s*(?:company\s*name|address|customer\s*name))?",
+                r"billing\s*address", r"invoice\s*to",
+                r"bill\s*to\s*name", r"send\s*invoices?\s*to", r"submit\s+invoices?\s+to",
+                r"bill\s*(?:to)?\s*(?:/\s*)?importer\s*of\s*record",
+                r"bill\s*(?:to)?\s*/\s*ship\s*to(?:\s*(?:company\s*name|address))?"],
+    "ship_to": [r"(?:please\s+)?ship[-\s]*to(?:\s*\([^\)]*\))?", r"ship\s*all\s*items\s*to",
+                r"(?:please\s+)?deliver\s*to(?:\s*\([^\)]*\))?",
                 r"shipping\s*address", r"delivery\s*address",
                 r"ship\s*to\s*address", r"ship\s*to\s*customer\s*name",
+                r"ship\s*(?:to)?\s*(?:/\s*)?consignee",
+                r"ship[-\s]*(?:to)?\s*(?:/[-/\s]*)?importer\s*of\s*record",
+                r"bill\s*(?:to)?\s*/\s*ship\s*to(?:\s*(?:company\s*name|address))?",
                 r"bill\s*/\s*ship\s*to"],
-    "end_user": [r"end\s*user", r"end\s*customer", r"end\s*user\s*info",
-                 r"ship\s*to\s*/\s*end\s*user\s*info", r"ship\s*to\s*/\s*end\s*user",
-                 r"end\s*customer\s*name", r"end\s*user\s*company\s*name",
-                 r"end\s*user\s*name", r"end\s*user\s*address",
-                 r"end\s*customer\s*address"],
-    "reseller": [r"reseller", r"re\s*seller", r"distributor",
+    "end_user": [r"end[-\s]*user", r"end[-\s]*customer", r"end[-\s]*user\s*info",
+                 r"ship\s*to\s*/\s*end[-\s]*user\s*info", r"ship\s*to\s*/\s*end[-\s]*user",
+                 r"end[-\s]*customer\s*name", r"end[-\s]*user\s*company\s*name",
+                 r"end[-\s]*user\s*name",
+                 r"end[-\s]*customer\s*address", r"\beu\s*:", r"\beu\s*#",
+                 r"customer\s*contact(?:\s*information)?", r"customer\s*information"],
+    "reseller": [r"reseller", r"re[-\s]*seller", r"distributor",
                  r"reseller\s*company\s*name", r"reseller\s*name",
-                 r"reseller\s*address"],
+                 r"partner(?:\s*name|\s*po|\s*company)?", r"partner\s*:\s*[A-Za-z0-9]"],
     "remit_to": [r"remit\s*to", r"payment\s*address"],
     "from": [r"from", r"buyer", r"purchaser"],
 }
@@ -55,7 +66,7 @@ PARTY_LABELS: dict[str, list[str]] = {
 GENERIC = {"to", "from", "vendor", "supplier", "seller", "buyer",
            "purchaser", "reseller", "distributor"}
 
-MAX_LABEL_ROW_WORDS = 12
+MAX_LABEL_ROW_WORDS = 14
 
 LABEL_RE = re.compile(
     r"^\s*\**\s*(" + "|".join(
@@ -72,10 +83,10 @@ PERSON_RE = re.compile(
     r"\b([A-Z][a-z]{1,15}(?:\s+[A-Z]\.?)?\s+[A-Z][a-z]{1,15})\b|"
     r"\b([A-Z][a-z]{1,15},\s*[A-Z][a-z]{1,15})\b")
 ORG_WORDS = re.compile(
-    r"\b(inc|llc|ltd|corp|corporation|company|co|gmbh|s\.?a\.?|pte|plc|"
-    r"technologies|technology|systems|solutions|services|logistics|group|holdings|university|"
-    r"county|department|bank|assurance|ulc|lp|llp|ag|bv|nv|pty|srl|kk|as|oy|"
-    r"sas|sarl|spa|aps|ab)\b", re.I)
+    r"\b(inc|llc|ltd|limited|corp|corporation|company|co|gmbh|s\.?a\.?|s\.?r\.?o\.?|pte|private|plc|"
+    r"technologies|technology|systems|solutions|services|logistics|group|holdings|university|authority|"
+    r"county|department|bank|assurance|ulc|lp|llp|ag|bv|nv|pty|srl|kk|a/s|aktieselskab|oy|"
+    r"sas|sarl|spa|aps|ab|command)\b", re.I)
 
 # Address lines, so they are not mistaken for a person's name.
 STREET_RE = re.compile(
@@ -91,7 +102,7 @@ CITY_LINE_RE = re.compile(
     r"\b[A-Z]{2}\b[\s,]*\d{5}(?:-\d{4})?\b"          # US state + ZIP
     r"|\b[A-Z]\d[A-Z]\s?\d[A-Z]\d\b"                  # Canadian postcode
     r"|\b[A-Z]{1,2}\d[A-Z\d]?\s?\d[A-Z]{2}\b"         # UK postcode
-    r"|\b(?:USA|U\.S\.A\.|United States|Canada|Mexico|India|Singapore|"
+    r"|\b(?:Country\s*)?(?:USA|U\.S\.A\.|US|United States|Canada|Mexico|India|Singapore|"
     r"Australia|Ireland|Germany|France|Netherlands)\b", re.I)
 
 # Real phone numbers, not part numbers or zip codes.
@@ -100,7 +111,7 @@ PHONE_STRICT_RE = re.compile(
     r"|\+\d{1,3}\s?\d{6,14}|\b\d{10,11}\b)")
 
 
-MAX_BAND_WIDTH = 285.0     # a party block is a column, not half a page
+MAX_BAND_WIDTH = 235.0     # a party block is a column, not half a page
 MAX_TAIL_GAP = 200.0       # key-value layouts put the value far right;
                            # MAX_BAND_WIDTH is what keeps a neighbouring
                            # column out, not this
@@ -128,12 +139,41 @@ class Party:
         an adjacent column or a key fragment ("Loc Name", "Purchase").
         """
         def usable(ln: str) -> Optional[str]:
-            s = re.sub(r"\(cid:\d+\)", "", ln).strip(" :*,\t")
+            s = re.sub(r"\(cid:\s*\d+\)", "", ln).strip(" :*,\t")
             if not s or len(s) < 3:
                 return None
-            if re.match(r"^(attn|attention|c/o|po#|ph#|phone|email|tel|fax|"
+            s = re.sub(r"^[|/\s:*,_\-]+|[|/\s:*,_\-]+$", "", s)
+            is_explicit_company = False
+            m_comp = re.search(r"\bCompany\s*:\s*([A-Za-z0-9 &.,\'()\-]+)", s, re.I)
+            if m_comp:
+                s = m_comp.group(1).strip(" :*,\t")
+                is_explicit_company = True
+            s = re.sub(r"^(?:(?:company|partner|customer|reseller|vendor)\s*[:\-]?\s+|(?:company\s*)?name|end[-\s]*(?:user|customer)|reseller|bill[-\s]*to|ship[-\s]*to)\s*[:\-]?\s*", "", s, flags=re.I)
+            s = re.sub(r"^(?:company|partner|reseller|vendor)\s+", "", s, flags=re.I)
+            s = re.sub(r"\s*(?:quote\s*(?:#|no\.?|number)?|f5\s*quote).*$", "", s, flags=re.I).strip(" :*,\t")
+            s = re.sub(r"\s+(?:Shipping\s+Terms|Payment\s+Terms|Fax\s*(?:No\.?|#)?|Phone\s*(?:No\.?|#)?|Tel\s*(?:No\.?|#)?)\b.*$", "", s, flags=re.I).strip(" :*,\t")
+            s = re.sub(r"\s+(?:FCA|FOB|CIP|CIF|DAP|DDP|EXW|CPT)\b.*$", "", s, flags=re.I).strip(" :*,\t")
+            if not s or len(s) < 3:
+                return None
+            if re.match(r"^(?:na|n/a|none|not\s*applicable|na\s+payment)\b", s, re.I):
+                return None
+            if re.search(r"[@]|thank\s*you|please\s+(?:send|submit|enter|contact)|invoicing\s*terms|internal\s*resale", s, re.I):
+                return None
+            if re.match(r"^(attn|attention|c/o|po\s*(?:#|no\.?|number)?|ph#|phone|email|e-?mail(?:\s*addr)?|tel|fax|"
                         r"date|page|loc\s*name|code|agency\s*name|"
-                        r"reference\s*eu|ship\s*to)\b", s, re.I):
+                        r"buyer\s*tax|tax\s*reg|tax\s*id|vat|gst|pan\s*no|reg\s*no|co\.\s*reg|"
+                        r"this\s*purchase\s*is\s*made|all\s*purchases\s*made|"
+                        r"questions|contact\s*(?:person|name|phone|email)?|"
+                        r"terms\b|terms\s*of\s*delivery|payment\s*terms|"
+                        r"reference\s*eu|ship\s*to|importer\s*of\s*record|consignee|purchase\s*order|supplier\s*tax)\b", s, re.I):
+                return None
+            if re.search(r"\b(?:to\s*provide|status\s*on|department\s*at|services\s*department|when\s*shipment|provide\s*documents)\b", s, re.I):
+                return None
+            if re.search(r"\b(?:at|the|of|for|to|by|in|on|with|from)$", s, re.I):
+                return None
+            if not is_explicit_company and (STREET_RE.search(s) or CITY_LINE_RE.search(s) or re.match(r"^\d+\s+[A-Za-z]", s)) and not ORG_WORDS.search(s):
+                return None
+            if s.upper() in ("LLC", "INC", "LTD", "CORP", "CO", "GMBH", "PLC", "LP", "ULC"):
                 return None
             return s
 
@@ -245,12 +285,12 @@ def _labels_in_row(row: Row) -> list[tuple[str, str, float, float]]:
     or opening a short row. Otherwise the word "to" in a sentence becomes
     a Ship To block.
     """
-    if len(row.words) > MAX_LABEL_ROW_WORDS:
+    if len(row.words) > 25:
         return []
 
     found = []
     used: set[int] = set()
-    for n in (5, 4, 3, 2, 1):
+    for n in (8, 7, 6, 5, 4, 3, 2, 1):
         for i in range(len(row.words) - n + 1):
             if any(j in used for j in range(i, i + n)):
                 continue
@@ -259,6 +299,11 @@ def _labels_in_row(row: Row) -> list[tuple[str, str, float, float]]:
             if not LABEL_RE.match(text):
                 continue
             norm = text.strip(" *:").lower()
+            if any(k in norm for k in ("contact person", "contact name", "contact phone", "contact email")):
+                continue
+            next_w = row.words[i + n].text.lower().strip(" :*") if i + n < len(row.words) else ""
+            if next_w in ("contact", "loc", "phone", "email", "address", "city", "state", "zip", "country", "fax"):
+                continue
             role = next((r for r, pats in PARTY_LABELS.items()
                          if any(re.fullmatch(p, norm, re.I) for p in pats)), None)
             if role is None:
@@ -289,6 +334,12 @@ def _labels_in_row(row: Row) -> list[tuple[str, str, float, float]]:
         if is_generic and not colon and not pure_label_row:
             continue
         out.append((role, label, x0, x1))
+
+    # If the row has more than MAX_LABEL_ROW_WORDS (14), only keep it if
+    # it contains at least 2 distinct side-by-side party labels.
+    if len(row.words) > MAX_LABEL_ROW_WORDS and len(out) < 2:
+        return []
+
     return sorted(out, key=lambda f: f[2])
 
 
@@ -327,29 +378,34 @@ def extract_parties(view: PdfView, max_lines: int = 16) -> list[Party]:
                 continue
 
             for k, (role, label, lx0, lx1) in enumerate(labels):
-                # The band this label owns: from just left of it to just
-                # left of the next label on the same row.
+                has_next = (k + 1 < len(labels))
+                tail_band_x1 = labels[k + 1][2] - 8 if has_next else page.width + 40
+                is_full_width_header = bool(re.search(r"customer\s*(?:contact|information)", label, re.I))
                 band_x0 = lx0 - 8
-                band_x1 = min(
-                    labels[k + 1][2] - 8 if k + 1 < len(labels) else page.width + 40,
-                    lx0 + MAX_BAND_WIDTH)
+                band_x1 = page.width - 36 if is_full_width_header else min(tail_band_x1, lx0 + MAX_BAND_WIDTH)
 
                 lines: list[str] = []
-                # Text on the label's own row, right of the label — but only
-                # if it actually follows the label. Carahsoft prints "Bill
-                # To:" on the far left and "Date  Page" on the far right of
-                # the same row; without the gap test the Bill To name
-                # becomes "Date Page".
                 tail_words = sorted(
-                    [w for w in row.words if w.x0 >= lx1 - 1 and w.xmid <= band_x1],
+                    [w for w in row.words if w.x0 >= lx1 - 1 and w.xmid <= tail_band_x1],
                     key=lambda w: w.x0)
                 if tail_words and tail_words[0].x0 - lx1 <= MAX_TAIL_GAP:
-                    tail = re.sub(r"\(cid:\d+\)", "", " ".join(w.text for w in tail_words)).strip(" :*,\t")
+                    tail = re.sub(r"\(cid:\s*\d+\)", "", " ".join(w.text for w in tail_words)).strip(" :*,\t")
                     if tail:
                         lines.append(tail)
 
                 prev_bottom = row.bottom
                 for nxt in rows[i + 1: i + 1 + max_lines * 2]:
+                    full_row_text = " ".join(w.text for w in nxt.words)
+                    m_sub = re.match(
+                        r"^(?:reseller|end[-\s]*user)\s+(?:contact\s*name|contact\s*phone|contact\s*email|loc\s*name|address|city[,\s]+state[,\s]+zip|country|phone|email)\s*(.*)",
+                        full_row_text, re.I)
+                    if m_sub and role in ("reseller", "end_user"):
+                        sub_val = re.sub(r"\(cid:\s*\d+\)", "", m_sub.group(1)).strip(" :*,\t")
+                        if sub_val:
+                            lines.append(sub_val)
+                        prev_bottom = nxt.bottom
+                        continue
+
                     words = [w for w in nxt.words if band_x0 <= w.xmid <= band_x1]
                     if not words:
                         # One blank line inside a block is normal; two ends it.
@@ -362,16 +418,21 @@ def extract_parties(view: PdfView, max_lines: int = 16) -> list[Party]:
                                 r"terms\s*and|purchase\s*order\s*number|"
                                 r"subject\s*to\s*state|subject\s*to\s*sales\s*tax|"
                                 r"via\s*for\s*po|for\s*po\s*questions|"
+                                r"remarks?\b|notes?\b|internal\s*ref|f5\s*sales|f5\s*quote|"
+                                r"invoicing\s*terms|this\s*purchase\s*is\s*made|"
                                 r"qty\b|quantity\b|unit\s*price|extended\s*price|"
                                 r"comments\b|total\s*(?:purchase|order)|payment\s*in|"
-                                r"please\s*send\s*(?:all|electronic))",
+                                r"please\s*(?:send|electronic|contact))",
                                 text, re.I):
+                        break
+                    # Stop if we hit another party block header (supporting asterisks like **END USER INFO**)
+                    if re.match(r"^\**\s*(?:reseller|end[-\s]*(?:user|customer)|ship[-\s]*to|bill[-\s]*to|vendor|sold[-\s]*to)\b", text, re.I):
                         break
                     if re.search(r"\b(qty|quantity)\b.*\b(unit\s*price|extended\s*price|price)\b", text, re.I):
                         break
                     if re.search(r"\b\d+\s+[\d,]+\.\d{2}\s+[\d,]+\.\d{2}\b", text):
                         break
-                    clean_text = re.sub(r"\(cid:\d+\)", "", text).strip(" :*,\t")
+                    clean_text = re.sub(r"\(cid:\s*\d+\)", "", text).strip(" :*,\t")
                     if clean_text:
                         lines.append(clean_text)
                     prev_bottom = nxt.bottom
@@ -386,10 +447,26 @@ def extract_parties(view: PdfView, max_lines: int = 16) -> list[Party]:
                 # To per page and trip the "multiple Bill To" rule on every
                 # multi-page PO.
                 key = (role, tuple(x.lower() for x in lines[:3]))
-                if key in seen_blocks:
-                    continue
-                seen_blocks.add(key)
-                parties.append(party)
+                if key not in seen_blocks:
+                    seen_blocks.add(key)
+                    parties.append(party)
+
+                # Compound Bill To / Ship To block clones into both roles only if
+                # the label itself explicitly contains both 'bill' and 'ship'.
+                is_compound = ("ship" in label.lower() and "bill" in label.lower())
+                if is_compound:
+                    if role == "bill_to":
+                        ship_key = ("ship_to", tuple(x.lower() for x in lines[:3]))
+                        if ship_key not in seen_blocks:
+                            seen_blocks.add(ship_key)
+                            parties.append(Party(role="ship_to", label=label, lines=list(lines),
+                                                 page=page.index, top=row.top, x0=lx0))
+                    elif role == "ship_to":
+                        bill_key = ("bill_to", tuple(x.lower() for x in lines[:3]))
+                        if bill_key not in seen_blocks:
+                            seen_blocks.add(bill_key)
+                            parties.append(Party(role="bill_to", label=label, lines=list(lines),
+                                                 page=page.index, top=row.top, x0=lx0))
 
     return merge_adjacent(parties)
 

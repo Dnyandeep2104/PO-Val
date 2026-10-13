@@ -41,6 +41,9 @@ MONEY_RE = re.compile(
 # Must contain a decimal point or a thousands separator to count as money;
 # stops bare integers like a line number being read as a price.
 MONEYISH_RE = re.compile(r"\d[\d,]*\.\d{1,6}|\d{1,3}(?:,\d{3})+")
+EURO_MONEY_RE = re.compile(
+    r"^\(?\s*(?:USD|EUR|GBP|CAD|AUD|SGD|JPY|CHF|INR)?\s*[\$€£¥]?\s*"
+    r"-?(?:\d{1,3}(?:\s+\d{3})+|\d+),\d{1,6}\s*[\$€£¥]?\s*\)?$")
 INT_RE = re.compile(r"^\d{1,7}$")
 QTY_RE = re.compile(r"^\d{1,3}(?:,\d{3})*(?:\.0+)?$")
 
@@ -159,7 +162,8 @@ class PdfView:
             with pdfplumber.open(io.BytesIO(self.data)) as pdf:
                 for i, page in enumerate(pdf.pages):
                     words = page.extract_words(use_text_flow=False,
-                                               keep_blank_chars=False)
+                                               keep_blank_chars=False,
+                                               x_tolerance=1.5)
                     rows = cluster_rows(
                         [Word(w["text"], w["x0"], w["x1"], w["top"],
                               w["bottom"], i) for w in words], page=i)
@@ -381,7 +385,11 @@ class PdfView:
                 chunk = row.words[i:i + n]
                 joined = " ".join(w.text for w in chunk).strip(" :#-")
                 if rx.fullmatch(joined):
-                    return chunk, min(w.x0 for w in chunk), max(w.x1 for w in chunk)
+                    colon = (i + n < len(row.words) and row.words[i + n].text.startswith(":")) or any(":" in w.text for w in chunk)
+                    starts_cell = i == 0 or (i > 0 and row.words[i - 1].text.endswith("|"))
+                    short_row = len(row.words) <= 8
+                    if colon or starts_cell or short_row:
+                        return chunk, min(w.x0 for w in chunk), max(w.x1 for w in chunk)
         return None
 
     def search(self, pattern: str, flags: int = re.I) -> Optional[re.Match]:
@@ -431,9 +439,20 @@ def cluster_rows(words: list[Word], page: int = 0,
         return []
     heights = sorted(w.height for w in words if w.height > 0)
     median_h = heights[len(heights) // 2] if heights else 8.0
-    tol = tol if tol is not None else max(1.5, median_h * 0.45)
+    tol = tol if tol is not None else max(2.5, median_h * 0.60)
 
     words = sorted(words, key=lambda w: (round(w.top, 1), w.x0))
+    # Merge touching words caused by zero-gap font kerning (e.g. '2' + '9,807.60' -> '29,807.60')
+    merged = [words[0]]
+    for w in words[1:]:
+        prev = merged[-1]
+        if abs(w.x0 - prev.x1) < 0.1 and abs(w.top - prev.top) < 2.0:
+            merged[-1] = Word(prev.text + w.text, prev.x0, w.x1,
+                              min(prev.top, w.top), max(prev.bottom, w.bottom), prev.page)
+        else:
+            merged.append(w)
+    words = merged
+
     rows: list[Row] = []
     current = [words[0]]
     anchor = words[0].top
@@ -463,7 +482,23 @@ def to_decimal(text: Optional[str]) -> Optional[Decimal]:
     neg = (s.startswith("(") and s.endswith(")")) or s.endswith("-")
     s = re.sub(r"(?i)\b(?:USD|EUR|GBP|CAD|AUD|SGD|JPY|CHF|INR)\b", "", s)
     s = s.replace("(", "").replace(")", "").rstrip("-")
-    s = re.sub(r"[\$€£¥,\s]", "", s)
+    s = re.sub(r"[\$€£¥%]", "", s).strip()
+    if not s:
+        return None
+    if "." in s and "," in s:
+        if s.rfind(",") > s.rfind("."):
+            s = s.replace(".", "").replace(",", ".")
+        else:
+            s = s.replace(",", "")
+    elif "," in s:
+        m = re.search(r",(\d+)$", s)
+        if m and (len(m.group(1)) != 3 or " " in s):
+            s = s.replace(" ", "").replace(",", ".")
+        else:
+            s = s.replace(",", "")
+    else:
+        s = s.replace(" ", "")
+
     if not s or not re.fullmatch(r"-?\d*\.?\d+", s):
         return None
     try:
@@ -474,7 +509,12 @@ def to_decimal(text: Optional[str]) -> Optional[Decimal]:
 
 
 def is_money(token: str) -> bool:
-    return bool(MONEY_RE.match(token.strip())) and bool(MONEYISH_RE.search(token))
+    t = token.strip()
+    if bool(MONEY_RE.match(t)) and bool(MONEYISH_RE.search(t)):
+        return True
+    if bool(EURO_MONEY_RE.match(t)):
+        return True
+    return False
 
 
 MAX_PRICE_DECIMALS = 4

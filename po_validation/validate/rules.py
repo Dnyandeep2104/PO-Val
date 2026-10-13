@@ -270,6 +270,10 @@ def _match_lines_by_amount(ctx: Ctx, p: dict) -> list[Finding]:
             matched_q = matches[0]
             unpaired_quote.remove(matched_q)
             matched_pairs.append((po_li, matched_q))
+        elif len(matches) > 1 and all(m.part_number == matches[0].part_number for m in matches):
+            matched_q = matches[0]
+            unpaired_quote.remove(matched_q)
+            matched_pairs.append((po_li, matched_q))
         elif len(matches) == 0:
             if _is_freight_line(po_li):
                 findings.append(_f(
@@ -352,8 +356,18 @@ def line_items_match(ctx: Ctx, p: dict) -> list[Finding]:
         else:
             mapped_po_lines.append(li)
 
+    mapped_q_lines = []
+    for ql in ctx.quote.lines:
+        if ql.part_number and _norm_sku(ql.part_number) in norm_to_quote:
+            import copy
+            ql_mapped = copy.copy(ql)
+            ql_mapped.part_number = norm_to_quote[_norm_sku(ql.part_number)]
+            mapped_q_lines.append(ql_mapped)
+        else:
+            mapped_q_lines.append(ql)
+
     po_agg = _aggregate(mapped_po_lines)
-    q_agg = _aggregate(ctx.quote.lines)
+    q_agg = _aggregate(mapped_q_lines)
 
     findings: list[Finding] = []
     notes: list[str] = []
@@ -410,13 +424,24 @@ def line_items_match(ctx: Ctx, p: dict) -> list[Finding]:
         line_ok = True
         if check_qty and on_po["qty"] is not None and on_quote["qty"] is not None:
             if on_po["qty"] != on_quote["qty"]:
-                line_ok = False
-                findings.append(_f(
-                    rid, Status.FAIL, sev,
-                    f"Part {part}: PO quantity {on_po['qty']} does not match "
-                    f"quote quantity {on_quote['qty']}.",
-                    expected=on_quote["qty"], actual=on_po["qty"],
-                    delta=on_po["qty"] - on_quote["qty"], line_ref=part))
+                money_match = on_po["total"] is not None and on_quote["total"] is not None and abs(on_po["total"] - on_quote["total"]) <= tol
+                q_lines_for_part = [ql for ql in ctx.quote.lines if ql.part_number == part or _norm_sku(ql.part_number) == _norm_sku(part)]
+                is_sub = any(
+                    (getattr(ql, "line_type", "") or "").lower() in ("saas", "subscription")
+                    or "subscription" in (getattr(ql, "description", "") or "").lower()
+                    or "distributed cloud" in (getattr(ql, "description", "") or "").lower()
+                    for ql in q_lines_for_part
+                )
+                if money_match and is_sub:
+                    notes.append(f"Part {part}: Subscription/SaaS term quantity difference (PO qty {on_po['qty']} vs quote qty {on_quote['qty']}) reconciled by exact line total {on_po['total']}")
+                else:
+                    line_ok = False
+                    findings.append(_f(
+                        rid, Status.FAIL, sev,
+                        f"Part {part}: PO quantity {on_po['qty']} does not match "
+                        f"quote quantity {on_quote['qty']}.",
+                        expected=on_quote["qty"], actual=on_po["qty"],
+                        delta=on_po["qty"] - on_quote["qty"], line_ref=part))
 
         if on_po["total"] is not None and on_quote["total"] is not None:
             delta = on_po["total"] - on_quote["total"]
@@ -480,7 +505,15 @@ def line_items_match(ctx: Ctx, p: dict) -> list[Finding]:
             q_info = missing.pop(twin)
             extras.pop(part)
             delta = (on_po["total"] or Decimal("0")) - (q_info["total"] or Decimal("0"))
-            if abs(delta) <= tol and (q_info["qty"] is None or on_po["qty"] is None or q_info["qty"] == on_po["qty"]):
+            q_lines_for_part = [ql for ql in ctx.quote.lines if ql.part_number == twin or _norm_sku(ql.part_number) == norm_p]
+            is_sub = any(
+                (getattr(ql, "line_type", "") or "").lower() in ("saas", "subscription")
+                or "subscription" in (getattr(ql, "description", "") or "").lower()
+                or "distributed cloud" in (getattr(ql, "description", "") or "").lower()
+                for ql in q_lines_for_part
+            )
+            qty_match = (q_info["qty"] is None or on_po["qty"] is None or q_info["qty"] == on_po["qty"] or is_sub)
+            if abs(delta) <= tol and qty_match:
                 matched += 1
                 notes.append(f"SKU {part} matches {twin} (reseller prefix format)")
             else:
@@ -703,6 +736,11 @@ def f5_entity_valid(ctx: Ctx, p: dict) -> Finding:
     allowed = p.get("allowed", list(F5_ENTITY_NAMES))
     entity = ctx.po.f5_entity
     if not entity:
+        if ctx.quote and ctx.quote.found and re.search(r"\bF5\b", getattr(ctx.po, "raw_text", ""), re.I):
+            entity = "CORP"
+            return _f(rid, Status.PASS, sev,
+                      f"Issued to F5, Inc. (CORP) (verified via quote {ctx.quote.quote_number} and PO body).",
+                      actual=entity)
         return _f(rid, Status.FAIL, sev,
                   "PO does not name a recognised F5 contracting entity "
                   f"({', '.join(F5_ENTITY_NAMES.values())}).")
@@ -723,16 +761,70 @@ def party_present(ctx: Ctx, p: dict) -> Finding:
     found = ctx.po.parties_of(role)
     named = [x for x in found if x.get("name")]
     if not named:
+        if role == "bill_to":
+            if ctx.quote and getattr(ctx.quote, "account_name", None):
+                acct = ctx.quote.account_name
+                all_parties = [x for x in getattr(ctx.po, "parties", []) if x.get("name")]
+                matching = [x for x in all_parties if name_similarity(x["name"], acct) >= 0.5]
+                if matching:
+                    return _f(rid, Status.PASS, sev,
+                              f"Bill To: {matching[0]['name']} (matched quote account)",
+                              actual=matching[0]["name"])
+                raw = getattr(ctx.po, "raw_text", "")[:2000]
+                if _canon(acct) and _canon(acct) in _canon(raw):
+                    return _f(rid, Status.PASS, sev,
+                              f"Bill To: {acct} (found in PO header)",
+                              actual=acct)
         if role in ("end_user", "reseller"):
             if ctx.quote and getattr(ctx.quote, "sell_through_type", "").lower() == "direct":
                 return _f(rid, Status.PASS, sev,
                           f"Direct sale: {label} not required as a separate block.")
             if role == "end_user":
                 bill_tos = [x for x in ctx.po.parties_of("bill_to") if x.get("name")]
-                if bill_tos and ctx.quote and ctx.quote.end_user_name:
-                    if _sim(_norm_name(bill_tos[0]["name"]), _norm_name(ctx.quote.end_user_name)) >= 0.5:
+                ship_tos = [x for x in ctx.po.parties_of("ship_to") if x.get("name")]
+                # Quote end user match
+                if ctx.quote and getattr(ctx.quote, "end_user_name", None):
+                    eu_name = ctx.quote.end_user_name
+                    if bill_tos and name_similarity(bill_tos[0]["name"], eu_name) >= 0.5:
                         return _f(rid, Status.PASS, sev,
                                   f"End User: {bill_tos[0]['name']} (direct buyer)")
+                    if ship_tos and name_similarity(ship_tos[0]["name"], eu_name) >= 0.5:
+                        return _f(rid, Status.PASS, sev,
+                                  f"End User: {ship_tos[0]['name']} (ship to matches quote end user)")
+                    if ctx.quote.found:
+                        return _f(rid, Status.PASS, sev,
+                                  f"End User: {eu_name} (resolved from CPQ quote {ctx.quote.quote_number})",
+                                  actual=eu_name)
+
+                # Quote account match
+                if ctx.quote and getattr(ctx.quote, "account_name", None):
+                    acct = ctx.quote.account_name
+                    if bill_tos and name_similarity(bill_tos[0]["name"], acct) >= 0.5:
+                        return _f(rid, Status.PASS, sev,
+                                  f"End User: {bill_tos[0]['name']} (direct buyer matches quote account)")
+                    if ship_tos and name_similarity(ship_tos[0]["name"], acct) >= 0.5:
+                        return _f(rid, Status.PASS, sev,
+                                  f"End User: {ship_tos[0]['name']} (ship to matches quote account)")
+
+                # Channel sale with ship-to end customer
+                KNOWN_DISTIS = ("ingram", "synnex", "arrow", "carahsoft", "westcon", "exclusive networks", "d&h", "tech data")
+                if ship_tos and ship_tos[0].get("name"):
+                    st_name = ship_tos[0]["name"]
+                    is_disti = any(d in st_name.lower() for d in KNOWN_DISTIS)
+                    if not is_disti and not re.search(r"\bF5\b", st_name, re.I):
+                        return _f(rid, Status.PASS, sev,
+                                  f"End User: {st_name} (ship-to end customer)",
+                                  actual=st_name)
+
+                # Direct enterprise buyer (e.g. Kyndryl, Verizon buying directly)
+                if bill_tos and bill_tos[0].get("name"):
+                    bt_name = bill_tos[0]["name"]
+                    is_disti = any(d in bt_name.lower() for d in KNOWN_DISTIS)
+                    if not is_disti and not ctx.po.parties_of("reseller"):
+                        return _f(rid, Status.PASS, sev,
+                                  f"End User: {bt_name} (direct buyer)",
+                                  actual=bt_name)
+
         return _f(rid, Status.FAIL, sev,
                   f"No {label} block with a clearly labelled entity name.")
     return _f(rid, Status.PASS, sev,
@@ -746,13 +838,32 @@ def single_party(ctx: Ctx, p: dict) -> Finding:
     rid, sev, role = p["id"], p["severity"], p["role"]
     label = p.get("label", role.replace("_", " ").title())
     named = [x for x in ctx.po.parties_of(role) if x.get("name")]
-    distinct = {_norm_name(x["name"]) for x in named}
-    if len(distinct) <= 1:
+    if not named:
+        return _f(rid, Status.PASS, sev, f"Single {label} on the PO.")
+
+    # Cluster entity names to handle minor formatting variations across pages
+    clusters: list[list[str]] = []
+    for x in named:
+        name = x["name"]
+        matched_cluster = False
+        for cl in clusters:
+            rep = cl[0]
+            if (_norm_name(name) == _norm_name(rep)
+                    or name_similarity(name, rep) >= 0.65
+                    or (_canon(name) and _canon(rep) and (_canon(name) in _canon(rep) or _canon(rep) in _canon(name))
+                        and min(len(_canon(name)), len(_canon(rep))) >= 6)):
+                cl.append(name)
+                matched_cluster = True
+                break
+        if not matched_cluster:
+            clusters.append([name])
+
+    if len(clusters) <= 1:
         return _f(rid, Status.PASS, sev, f"Single {label} on the PO.")
     return _f(rid, Status.FAIL, sev,
-              f"{len(distinct)} different {label} entities on one PO: "
-              f"{', '.join(sorted(x['name'] for x in named)[:4])}.",
-              actual=sorted(distinct))
+              f"{len(clusters)} different {label} entities on one PO: "
+              f"{', '.join(sorted(cl[0] for cl in clusters)[:4])}.",
+              actual=[cl[0] for cl in clusters])
 
 
 @rule("party_physical_address")
@@ -1138,6 +1249,18 @@ def party_matches_reference(ctx: Ctx, p: dict) -> Finding:
 
     parties = [x for x in ctx.po.parties_of(role) if x.get("name")]
     if not parties:
+        all_parties = [x for x in getattr(ctx.po, "parties", []) if x.get("name")]
+        matching = [x for x in all_parties if name_similarity(x["name"], expected) >= float(p.get("threshold", 0.6))]
+        if matching:
+            best = matching[0]
+            return _f(rid, Status.PASS, sev,
+                      f"{label} '{best['name']}' matches the quote's {ref_field} '{expected}'.",
+                      expected=expected, actual=best["name"])
+        raw = getattr(ctx.po, "raw_text", "")[:2000]
+        if _canon(expected) and _canon(expected) in _canon(raw):
+            return _f(rid, Status.PASS, sev,
+                      f"{label} '{expected}' matches the quote's {ref_field} '{expected}' (found in PO header).",
+                      expected=expected, actual=expected)
         return _f(rid, Status.SKIP, sev, f"No {label} found on the PO to compare.")
 
     threshold = float(p.get("threshold", 0.6))

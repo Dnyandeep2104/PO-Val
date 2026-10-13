@@ -22,8 +22,9 @@ from .tables import read_records
 QUOTE_RE = r"(?:(?<=[^\w])|^|(?<=QUOTE))F5\s*[-–—_]?\s*Q\s*[-–—_.]?\s*\d{7,8}(?=[^\d]|$)"
 QUOTE_LOOSE_RE = (
     r"(?:(?<=[^\w])|^|(?<=QUOTE))F5\s*[-–—_]?\s*Q\s*[-–—_.]?\s*\d{7,8}(?=[^\d]|$)"
-    r"|(?:Quote\s*(?:#|no\.?|number)?\s*[:\-]?\s*|\bQuote#\s*)\d{6,8}"
+    r"|(?:(?:Vendor\s*)?Quote\s*(?:#|no\.?|number)?\s*[:\-]?\s*|\bQuote#\s*|\bVendor\s*Q\s*#?\s*[:\-]?\s*)\d{6,8}"
     r"|\b(?:QSA|QUO)[-_]?\d{6,8}\b"
+    r"|\bNote\s*[:\-]?\s*(\d{7,8})\b"
 )
 
 # The four F5 contracting entities named at the top of the checklist.
@@ -34,11 +35,14 @@ F5_ENTITIES: list[tuple[str, str]] = [
     ("CORP",  r"F5,\s*Inc\.?"),
     ("CORP",  r"F5\s+Networks,?\s*Inc\.?"),
     ("CORP",  r"\bF5\s+Inc\.?"),
+    ("CORP",  r"\bF5\s+Networks\b"),
+    ("CORP",  r"\bF5\b(?=[\s\S]{0,200}(?:Seattle|Elliott|401\s+Elliott))"),
 ]
 
 PO_LABELS = [
-    r"purchase\s*order\s*(?:no\.?|number|#)?", r"p\.?\s?o\.?\s*(?:no\.?|number|#)",
+    r"purchase\s*order\s*(?:no\.?|number|#)", r"p\.?\s?o\.?\s*(?:no\.?|number|#)",
     r"po\s*#", r"order\s*(?:no\.?|number|#)", r"document\s*(?:no\.?|number)",
+    r"purchase\s*order",
 ]
 PO_VALUE_RE = re.compile(r"(?=[A-Z0-9\-_/]*\d)[A-Z0-9][A-Z0-9\-_/]{3,}")
 
@@ -51,7 +55,7 @@ DATE_FORMATS = ["%m/%d/%Y", "%m/%d/%y", "%d/%m/%Y", "%Y-%m-%d", "%d-%b-%Y",
                 "%d-%b-%y", "%b %d, %Y", "%d %B %Y", "%B %d, %Y", "%d %b %Y"]
 
 PAYMENT_TERMS_RE = re.compile(
-    r"(?:payment\s*terms?|terms\s*of\s*payment|pmt\s*terms?|\bterms\b)\s*[:\-]?\s*"
+    r"(?:payment\s*terms?|terms\s*of\s*(?:delivery\s*and\s*)?payment|terms\s*of\s*payment|pmt\s*terms?|\bterms\b)\s*[:\-]?\s*"
     r"(net\s*\d{1,3}|\d{1,3}\s*days?\s*net|net\s*\d{1,3}\s*days?|"
     r"\bn\s?\d{2,3}\b|due\s*on\s*receipt|prepaid|\bcod\b|"
     r"\d+%\s*\d+\s*net\s*\d+)", re.I)
@@ -64,7 +68,7 @@ INCO_RE = re.compile(
     r"\b(?:" + "|".join(INCOTERMS) + r")\b"
     r"(?:\s+(?:free\s+carrier|ship\s*point|origin|destination|on\s+board|"
     r"named\s+place)(?:\s+\w+){0,3})?", re.I)
-ACCEPTABLE_INCO_RE = re.compile(r"\b(?:FCA|EXW)\b|ship\s*point|\borigin\b", re.I)
+ACCEPTABLE_INCO_RE = re.compile(r"\b(?:FCA|EXW|FOB)\b|ship\s*point|\borigin\b", re.I)
 DESTINATION_INCO_RE = re.compile(r"\bdestination\b|\b(?:DDP|DAP|DPU)\b", re.I)
 
 CARRIERS = {"FEDEX": r"fed\s*ex|fedex", "UPS": r"\bUPS\b",
@@ -96,6 +100,8 @@ TOTAL_PATTERNS: list[tuple[int, str]] = [
     (7,  r"total\s*\((?:USD|[A-Z]{3}|\$)\)"),
     (7,  r"\btotal\s+(?:USD|EUR|GBP|SGD|CAD|AUD|[A-Z]{3})\b"),
     (7,  r"total\s*amount"),
+    (7,  r"net\s*amount"),
+    (7,  r"gross\s*amount"),
     (6,  r"\btotal\s*:"),
     (6,  r"amount\s*:"),
     (5,  r"net\s*total"),
@@ -177,11 +183,27 @@ class BaseExtractor:
         for hay in (repaired_text, view.text, view.layout_text):
             for m in re.finditer(QUOTE_LOOSE_RE, hay, re.I):
                 raw = m.group(0)
-                qm = re.search(r"(?:Q|QUO|QSA|Quote\s*#?)\s*[-_.]?\s*(\d{6,8})", raw, re.I)
+                qm = re.search(r"(?:Q|QUO|QSA|Quote\s*#?|Vendor\s*Q\s*#?|Note\s*[:\-]?)\s*[-_.]?\s*(\d{6,8})", raw, re.I)
                 if qm:
                     q = f"F5Q-{qm.group(1).zfill(8)}"
                     if q not in out:
                         out.append(q)
+
+        # Check for column header 'VENDOR Q#' followed directly by value on the row below
+        for p in view.pages:
+            for idx, r in enumerate(p.rows[:-1]):
+                for w_idx, w in enumerate(r.words):
+                    if re.match(r"^vendor$", w.text, re.I) and w_idx + 1 < len(r.words):
+                        next_w = r.words[w_idx + 1]
+                        if re.match(r"^q#?$", next_w.text, re.I):
+                            next_row = p.rows[idx + 1]
+                            for w2 in next_row.words:
+                                if abs(w2.x0 - w.x0) < 35:
+                                    m_num = re.search(r"\b(\d{7,8})\b", w2.text)
+                                    if m_num:
+                                        q = f"F5Q-{m_num.group(1).zfill(8)}"
+                                        if q not in out:
+                                            out.append(q)
         return out
 
     def po_number(self, view: PdfView) -> Optional[str]:
@@ -207,7 +229,8 @@ class BaseExtractor:
         if m:
             return " ".join(m.group(1).split()).upper()
         val = view.label_value(
-            [r"payment\s*terms?", r"terms\s*of\s*payment", r"pmt\s*terms?",
+            [r"payment\s*terms?", r"terms\s*of\s*(?:delivery\s*and\s*)?payment",
+             r"terms\s*of\s*payment", r"pmt\s*terms?",
              r"terms"],
             value_re=TERMS_VALUE_RE)
         return " ".join(val.split())[:40].upper() if val else None
@@ -231,14 +254,29 @@ class BaseExtractor:
         labelled = view.label_value(
             [r"inco\s*terms?", r"international\s*commercial\s*terms",
              r"terms\s*of\s*delivery", r"ship\s*terms", r"delivery\s*terms",
-             r"freight\s*terms", r"fob"])
+             r"freight\s*terms", r"fob\s*:?"])
         candidate = None
         if labelled and INCO_RE.search(labelled):
-            candidate = " ".join(labelled.split())[:60]
-        else:
-            m = INCO_RE.search(view.layout_text) or INCO_RE.search(view.raw_text)
-            if m:
-                candidate = " ".join(m.group(0).split())
+            if not re.search(r"shipments?\s+of|terms\s+(?:and|&)\s+conditions", labelled, re.I):
+                candidate = " ".join(labelled.split())[:60]
+        if not candidate:
+            for hay in (view.layout_text, view.raw_text):
+                for m in INCO_RE.finditer(hay):
+                    term = " ".join(m.group(0).split())
+                    start_pos = max(0, m.start() - 50)
+                    end_pos = min(len(hay), m.end() + 50)
+                    context = hay[start_pos:end_pos].lower()
+                    if re.search(r"\d+\s*cfr|\bcfr\s*\d+|act\s+of\b|regulations", context):
+                        continue
+                    if re.search(r"shipments?\s+of|terms\s+(?:and|&)\s+conditions", context):
+                        continue
+                    if term.upper() in ("FOB", "FAS", "CFR", "CIF", "DAT"):
+                        if re.search(r"\b(ship\s*via|vendor\s*#|acct\s*#|buyer\s*name|p\.?o\.?)\b", context):
+                            continue
+                    candidate = term
+                    break
+                if candidate:
+                    break
         if not candidate:
             return None, None
         if DESTINATION_INCO_RE.search(candidate):

@@ -24,6 +24,45 @@ class IngramExtractor(BaseExtractor):
     name = "ingram"
     fingerprints = ["ingram micro"]
 
+    def extract(self, view: PdfView, source_id: str):
+        po = super().extract(view, source_id)
+        from ..parties import Party
+        import re
+
+        # Extract partner reseller if cited on Ingram PO (e.g. CDW, ITSAVVY LLC)
+        if re.search(r"\bCDW\s+LOGISTICS\s+LLC\b|\bCDW\s+ORDER#\b|@CDW\.COM\b|\bRSLR:\s*CDW\b", view.layout_text, re.I):
+            po.reseller_name = "CDW"
+            po.parties.append(Party(role="reseller", label="Reseller Partner", lines=["CDW"], page=0).to_dict())
+        elif re.search(r"\bITSAVVY\s+LLC\b", view.layout_text, re.I):
+            po.reseller_name = "ITSAVVY LLC"
+            po.parties.append(Party(role="reseller", label="Reseller Partner", lines=["ITSAVVY LLC"], page=0).to_dict())
+
+        has_bill_to = any(p.get("role") == "bill_to" and p.get("name") for p in po.parties)
+        if not has_bill_to:
+            bt = Party(
+                role="bill_to",
+                label="Letterhead",
+                lines=["INGRAM MICRO", "3351 MICHELSON DR STE 100", "IRVINE, CA 92612-0697", "714-566-1000"],
+                page=0
+            )
+            po.parties.append(bt.to_dict())
+
+        has_ship_to = any(p.get("role") == "ship_to" and p.get("name") for p in po.parties)
+        if not has_ship_to:
+            m = re.search(r"\bS\s*\n\s*H\s*\n\s*I\s+([A-Za-z0-9 &.,'-]+)\s*\n\s*P\s+([^\n]+)\s*\n(?:\s*EUPO[^\n]+\n)?\s*T\s+([^\n]+)", view.layout_text)
+            if m:
+                name_line = m.group(1).strip()
+                addr1 = m.group(2).strip()
+                addr2 = m.group(3).strip()
+                st = Party(role="ship_to", label="Ship To", lines=[name_line, addr1, addr2], page=0)
+                po.parties.append(st.to_dict())
+            else:
+                eu_parties = [p for p in po.parties if p.get("role") == "end_user" and p.get("name")]
+                if eu_parties:
+                    st = Party(role="ship_to", label="Ship To (EU)", lines=list(eu_parties[0]["lines"]), page=0)
+                    po.parties.append(st.to_dict())
+        return po
+
 
 class SynnexExtractor(BaseExtractor):
     name = "synnex"

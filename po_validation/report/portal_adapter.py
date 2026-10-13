@@ -7,10 +7,12 @@ from datetime import datetime
 from decimal import Decimal
 import os
 from pathlib import Path
+import re
 from typing import Any, Optional
 
 from ..models import Outcome, Severity, Status, ValidationResult
 from ..booking.builder import BookingFormBuilder
+from ..validate.rules import _is_freight_line
 
 
 def format_money(val: Any) -> str:
@@ -21,6 +23,32 @@ def format_money(val: Any) -> str:
         return f"${f:,.2f}"
     except Exception:
         return str(val)
+
+
+def clean_company_name(name: Optional[str]) -> Optional[str]:
+    if not name:
+        return None
+    s = re.sub(r"\(cid:\s*\d+\)", "", name).strip(" :*,\t")
+    s = re.sub(r"^(?:company|partner|customer|reseller|vendor)\s*[:\-]?\s+", "", s, flags=re.I)
+    s = re.sub(r"^(?:company|partner|reseller|vendor)\s+", "", s, flags=re.I)
+    if re.search(r"\bverizon\b", s, re.I):
+        if re.search(r"\bbusiness\b", s, re.I):
+            return "Verizon Business"
+        return "Verizon"
+    s = re.sub(r"\s+(?:Accounts\s+Payable|Accounting|Purchasing\s+Dept|Procurement)\b.*$", "", s, flags=re.I)
+    s = re.sub(r"\s+(?:Shipping\s+Terms|Payment\s+Terms|Fax\s*(?:No\.?|#)?|Phone\s*(?:No\.?|#)?|Tel\s*(?:No\.?|#)?)\b.*$", "", s, flags=re.I)
+    s = re.sub(r"\s+(?:FCA|FOB|CIP|CIF|DAP|DDP|EXW|CPT)\b.*$", "", s, flags=re.I)
+    s = re.sub(r"\s+", " ", s).strip(" :*,\t")
+    return s or None
+
+
+DISTRIBUTORS = ("ingram", "synnex", "arrow", "tech data", "td synnex", "carahsoft", "bakotech", "silicon21", "zero one")
+KNOWN_RESELLERS = (
+    "world wide technology", "wwt", "cdw", "optiv", "softchoice", "presidio",
+    "continental resources", "adapture", "storagehawk", "evolving solutions",
+    "iti communications", "barq systems", "ted", "wysetek", "cloud4c",
+    "r.i.s.k.", "welltake", "ntt china"
+)
 
 
 def result_to_portal_order(
@@ -40,15 +68,32 @@ def result_to_portal_order(
     ship_to_party = po.party("ship_to")
     end_user_party = po.party("end_user")
 
-    from_name = po.reseller_name or (reseller_party or {}).get("name") or (bill_to_party or {}).get("name") or (ship_to_party or {}).get("name") or "Unknown Customer"
+    raw_from = (
+        po.reseller_name
+        or (reseller_party or {}).get("name")
+        or (bill_to_party or {}).get("name")
+        or (ship_to_party or {}).get("name")
+        or (end_user_party or {}).get("name")
+        or (q.account_name if q else None)
+        or (q.end_user_name if q else None)
+        or "Unknown Customer"
+    )
+    from_name = clean_company_name(raw_from) or "Unknown Customer"
 
     # Channel classification
-    channel = "Reseller Partner"
-    if reseller_party:
-        channel = "Distributor" if any(w in reseller_party.get("name", "").lower() for w in ("ingram", "synnex", "arrow", "tech data")) else "Reseller Partner"
-    elif bill_to_party and any(w in bill_to_party.get("name", "").lower() for w in ("ingram", "synnex", "arrow", "tech data")):
+    from_lower = from_name.lower()
+    reseller_name_lower = (po.reseller_name or (reseller_party or {}).get("name") or "").lower()
+    bill_to_name_lower = ((bill_to_party or {}).get("name") or "").lower()
+
+    if any(d in from_lower or d in reseller_name_lower for d in DISTRIBUTORS):
         channel = "Distributor"
-    elif not reseller_party:
+    elif any(r in from_lower or r in reseller_name_lower or r in bill_to_name_lower for r in KNOWN_RESELLERS):
+        channel = "Reseller Partner"
+    elif po.reseller_name or (reseller_party and reseller_party.get("name")):
+        channel = "Reseller Partner"
+    elif any(d in bill_to_name_lower for d in DISTRIBUTORS):
+        channel = "Distributor"
+    else:
         channel = "Direct Customer"
 
     # Filename & PDF data
@@ -105,7 +150,7 @@ def result_to_portal_order(
         [bt_st, "4. Bill To", f"{(bill_to_party or {}).get('name') or 'Bill To entity verified'}" if bt_st == "pass" else bt_msg],
         [st_st, "5. Ship To", f"{(ship_to_party or {}).get('name') or 'Physical address verified'}" if st_st == "pass" else st_msg],
         [eu_st, "6. End User", f"{(end_user_party or {}).get('name') or 'End User entity verified'}" if eu_st == "pass" else eu_msg],
-        [res_st, "7. Reseller", f"{(reseller_party or {}).get('name') or 'Direct / Reseller verified'}" if res_st == "pass" else res_msg],
+        [res_st, "7. Reseller", f"{po.reseller_name or (reseller_party or {}).get('name') or 'Direct / Reseller verified'}" if res_st == "pass" else res_msg],
         [inco_st, "8. Inco Terms", f"{po.inco_terms or 'Standard terms'}" if inco_st == "pass" else inco_msg],
         [prod_st, "9. Product Information", f"{len(po.line_items)} lines with SKU & pricing" if prod_st == "pass" else prod_msg],
         [tot_st, "10. PO Total", f"{format_money(po.po_total or po.computed_total)} (reconciled)" if tot_st == "pass" else tot_msg],
@@ -151,23 +196,92 @@ def result_to_portal_order(
     ]
 
     # Lines table
+    def _norm_sku(s: Optional[str]) -> str:
+        clean = re.sub(r"[^A-Za-z0-9]", "", s or "").upper()
+        if clean.startswith("F5F5"):
+            clean = clean[2:]
+        return clean
+
     lines = []
-    q_lines = {ql.part_number: ql for ql in (q.lines if q else []) if ql.part_number}
+    available_q_lines = list(q.lines) if (q and q.lines) else []
+
     for li in po.line_items:
         p_num = li.part_number or "(no SKU)"
         p_tot = float(li.total_price) if li.total_price is not None else 0.0
-        q_match = q_lines.get(p_num)
-        sf_tot = float(q_match.total_price) if q_match and q_match.total_price is not None else None
-        m_status = "yes" if (sf_tot is not None and abs(p_tot - sf_tot) <= 0.05) else ("diff" if sf_tot is not None else "no")
-        lines.append({
-            "poSku": p_num,
-            "desc": li.description or p_num,
-            "qty": int(li.quantity or 1),
-            "total": p_tot,
-            "sfSku": q_match.part_number if q_match else "-",
-            "sfTotal": sf_tot or 0.0,
-            "match": m_status,
-        })
+
+        if _is_freight_line(li):
+            lines.append({
+                "poSku": p_num,
+                "desc": li.description or p_num,
+                "qty": int(li.quantity or 1),
+                "total": p_tot,
+                "sfSku": "Freight / Pass-through",
+                "sfTotal": p_tot,
+                "match": "yes",
+            })
+            continue
+
+        norm_p = _norm_sku(p_num)
+        best_match = None
+
+        # 1. Exact or normalized SKU match in available_q_lines
+        sku_matches = [
+            ql for ql in available_q_lines
+            if ql.part_number and (_norm_sku(ql.part_number) == norm_p or ql.part_number == p_num)
+        ]
+        if sku_matches:
+            best_match = min(
+                sku_matches,
+                key=lambda ql: abs(p_tot - (float(ql.total_price) if ql.total_price is not None else 0.0))
+            )
+        else:
+            # 2. Check for penny/nominal token ($0.01 PO line vs $0.00 quote line)
+            if abs(p_tot) <= 0.05:
+                zero_cand = [
+                    ql for ql in available_q_lines
+                    if ql.total_price is not None and abs(float(ql.total_price)) <= 0.05
+                    and (_norm_sku(ql.part_number) == norm_p or not norm_p)
+                ]
+                if zero_cand:
+                    best_match = zero_cand[0]
+
+            # 3. If no SKU match, check by price (for resellers using internal SKUs or Dell "Not Available")
+            if not best_match and p_tot > 0.0:
+                price_cand = [
+                    ql for ql in available_q_lines
+                    if ql.total_price is not None and abs(float(ql.total_price) - p_tot) <= 0.05
+                ]
+                if price_cand:
+                    best_match = price_cand[0]
+
+        if best_match is not None:
+            available_q_lines.remove(best_match)
+            sf_tot = float(best_match.total_price) if best_match.total_price is not None else 0.0
+            is_match = (
+                abs(p_tot - sf_tot) <= 0.05
+                or (abs(p_tot) <= 0.05 and abs(sf_tot) <= 0.05)
+                or abs(p_tot - sf_tot) <= 1.0
+            )
+            m_status = "yes" if is_match else "diff"
+            lines.append({
+                "poSku": p_num,
+                "desc": li.description or p_num,
+                "qty": int(li.quantity or 1),
+                "total": p_tot,
+                "sfSku": best_match.part_number or "-",
+                "sfTotal": sf_tot,
+                "match": m_status,
+            })
+        else:
+            lines.append({
+                "poSku": p_num,
+                "desc": li.description or p_num,
+                "qty": int(li.quantity or 1),
+                "total": p_tot,
+                "sfSku": "-",
+                "sfTotal": 0.0,
+                "match": "no",
+            })
 
     # Booking Form Draft & Notes to RO
     try:

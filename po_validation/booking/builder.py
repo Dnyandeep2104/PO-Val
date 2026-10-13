@@ -145,7 +145,9 @@ class BookingFormBuilder:
 
         reseller_party = po.party("reseller")
         reseller_name = "F5 Direct Deal"
-        if reseller_party and reseller_party.get("name"):
+        if po.reseller_name:
+            reseller_name = po.reseller_name
+        elif reseller_party and reseller_party.get("name"):
             reseller_name = reseller_party["name"]
         elif distributor != "None":
             reseller_name = distributor

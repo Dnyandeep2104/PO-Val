@@ -39,7 +39,7 @@ STRICT_F5_RE = re.compile(r"^F5[-–][A-Z0-9\-\+\.]{3,}$", re.I)
 
 DATE_TOKEN_RE = re.compile(
     r"^\d{1,2}[/\-][A-Za-z0-9]{1,4}[/\-]\d{2,4}$|^\d{4}-\d{2}-\d{2}$")
-LINE_NO_RE = re.compile(r"^\d{1,4}(?:\.\d{1,3})?$")
+LINE_NO_RE = re.compile(r"^\d{1,6}(?:\.\d{1,3})?$")
 
 # Column header vocabulary. Order inside a field does not matter; conflicts
 # between fields are resolved by specificity (longest matching label wins).
@@ -69,20 +69,21 @@ HEADER_SYNONYMS: dict[str, list[str]] = {
     ],
     "quantity": [
         r"qty\.?", r"quantity", r"qty\s*\(?unit\)?", r"qty\s*ord(?:ered)?",
-        r"order\s*qty", r"units?", r"qty\s*/\s*uom", r"open\s*qty",
+        r"order\s*qty", r"units\b", r"qty\s*/\s*uom", r"open\s*qty",
     ],
     "unit_price": [
-        r"unit\s*(?:price|cost)", r"unit\s*net", r"price\s*(?:each|/\s*ea)?",
-        r"each", r"rate", r"list\s*price",
+        r"unit\b", r"unit\s*(?:price|cost)", r"unit\s*net", r"price\s*(?:each|/\s*ea)?",
+        r"each", r"rate", r"list\s*price", r"price\s*/\s*unit",
         r"unit\s*sell", r"price", r"cost",
     ],
     "total_price": [
         r"ext(?:ended)?\.?\s*(?:price|amount|cost)?", r"extension",
         r"line\s*(?:total|amount|value)", r"total\s*(?:price|amount|net)?",
         r"amount", r"net\s*amount", r"net\s*price", r"value", r"subtotal",
-        r"sub\s*total",
+        r"sub\s*total", r"net\s*val(?:ue)?",
         r"total", r"ext\.?",
     ],
+    "discount": [r"discount", r"disc\.?", r"discount\s*%", r"disc\s*%"],
     "uom": [r"uom", r"u/m", r"unit\s*of\s*measure", r"um"],
 }
 
@@ -92,7 +93,7 @@ STOP_RE = re.compile(
     r"purchase\s*order)|p\.?o\.?\s*total|order\s*total|total\s*\(|freight\b|"
     r"shipping\s*(?:and|&)|sales\s*tax|^tax$|terms\s*(?:and|&)\s*conditions|"
     r"remit\s*to|authorized\s*signature|continued\s*on\s*next|"
-    r"vendor\s*comments|comments\s*:|please\s*send|thank\s*you)", re.I)
+    r"vendor\s*comments|comments\s*:|please\s*send|thank\s*you|reseller\b|end\s*user\b)", re.I)
 
 # Text that is never a line item, even inside the table region.
 NOISE_RE = re.compile(
@@ -144,7 +145,7 @@ def _label_matches(label: str) -> list[tuple[str, int]]:
         best = -1
         for pat in patterns:
             if re.fullmatch(pat, norm, re.I):
-                best = max(best, len(pat))
+                best = max(best, len(norm))
         if best >= 0:
             out.append((field, best))
     return out
@@ -199,7 +200,7 @@ def merge_header_rows(header_rows: list[Row]) -> list[Word]:
 
 
 def find_columns(rows: list[Row], idx: int,
-                 lookahead: int = 1) -> tuple[dict[str, Column], list[Row], int]:
+                 lookahead: int = 2) -> tuple[dict[str, Column], list[Row], int]:
     """Try to read rows[idx], optionally merged with the next row, as a
     table header. Returns columns, the header rows consumed, and a score."""
     best: tuple[dict[str, Column], list[Row], int] = ({}, [], 0)
@@ -536,15 +537,34 @@ def pick_part_number(record: list[Row], cols: dict[str, Column]) -> Optional[str
 
     def skus(bands) -> list[str]:
         out = []
-        for toks in bands:
-            for t in toks:
-                t = t.strip(" ,;:|")
-                if SKU_RE.match(t) and not is_money(t) and not DATE_TOKEN_RE.match(t):
-                    out.append(t)
+        for i, toks in enumerate(bands):
+            for j, t in enumerate(toks):
+                clean_t = t.strip(" ,;:|")
+                if not clean_t:
+                    continue
+                next_tok = None
+                if j + 1 < len(toks):
+                    next_tok = toks[j + 1].strip(" ,;:|")
+                elif i + 1 < len(bands) and bands[i + 1]:
+                    next_tok = bands[i + 1][0].strip(" ,;:|")
+                if clean_t.endswith("-") and next_tok:
+                    combined = clean_t + next_tok
+                    if (SKU_RE.match(combined) or F5_SKU_RE.match(combined)) and not is_money(combined):
+                        out.append(combined)
+                if SKU_RE.match(clean_t) and not is_money(clean_t) and not DATE_TOKEN_RE.match(clean_t):
+                    out.append(clean_t.rstrip("-"))
         return out
 
     candidates = skus(part_band)
     desc_candidates = skus(desc_band)
+
+    # Check for explicit vendor material/part number label in the record text (e.g. Verizon PO: "Vendormaterialnumber: F5-BIL-CUSTOM")
+    rec_text = " ".join(r.text for r in record)
+    m_vm = re.search(r"(?:vendor\s*(?:material|part)\s*(?:number|#)?|vendormaterialnumber)\s*[:\-]?\s*([A-Za-z0-9][A-Za-z0-9\-_/.]+)", rec_text, re.I)
+    if m_vm:
+        vm_sku = m_vm.group(1).strip()
+        if STRICT_F5_RE.match(vm_sku) or F5_SKU_RE.match(vm_sku):
+            return vm_sku
 
     # If the description has a genuine F5 SKU (e.g. F5-V-O-ALL-BASE-PKG), prefer that
     # over a distributor's internal item code in part_band (e.g. F5_F5VOALLBASEPKG).
@@ -589,6 +609,11 @@ def money_candidates(record: list[Row], cols: dict[str, Column],
     rows_tokens = band_tokens(record, col)
     out: list[Decimal] = []
     for i, toks in enumerate(rows_tokens):
+        full_cell = " ".join(toks).strip()
+        if is_money(full_cell):
+            full_d = to_decimal(full_cell)
+            if full_d is not None and full_d not in out:
+                out.append(full_d)
         for t in toks:
             if DATE_TOKEN_RE.match(t) or not is_money(t):
                 continue
@@ -657,7 +682,16 @@ def reconcile(units: list[Decimal], qtys: list[int],
         if abs(ratio - round(ratio)) < Decimal("0.01") and 0 < round(ratio) < 10_000_000:
             return units[0], int(round(ratio)), totals[0], True
 
-    # 3. No consistent reading. Hand back best guesses and flag it, so the
+    # 3. Discounted line: list unit price is present, total is discounted, net unit price derives cleanly
+    for u in units:
+        for q in qtys:
+            for t in totals:
+                if q > 0 and 0 < t < u * q:
+                    derived_u = (t / q).quantize(Decimal("0.01"))
+                    if abs(derived_u * q - t) <= tol:
+                        return derived_u, q, t, True
+
+    # 4. No consistent reading. Hand back best guesses and flag it, so the
     #    line surfaces for review rather than being silently wrong.
     return (units[0] if units else None,
             qtys[0] if qtys else None,
@@ -695,7 +729,7 @@ def read_records(view: PdfView) -> tuple[list[dict], dict]:
 
             # Drop footer, copyright, and pagination rows (e.g. Silicon21 copyright)
             raw_full = " ".join(r.text for r in rec).lower()
-            if any(k in raw_full for k in ("copyright", "all rights reserved", "©", "page 1 of", "page 2 of")):
+            if any(k in raw_full for k in ("copyright", "all rights reserved", "©")) or re.search(r"page\s+\d+\s+of\s+\d+", raw_full):
                 continue
 
             # Keep a record with no SKU as long as it has commercial
@@ -713,6 +747,13 @@ def read_records(view: PdfView) -> tuple[list[dict], dict]:
             # or an identifiable F5 SKU.
             if total is None and unit is None and not (part and STRICT_F5_RE.match(part)):
                 continue
+
+            if unit is None and qty is None and total is not None:
+                raw_rec = " ".join(r.text for r in rec)
+                if re.search(r"\b(each|ea|lot|ls|job|annual|quarterly|service|fee|flat)\b", raw_rec, re.I):
+                    unit = total
+                    qty = 1
+                    exact = True
 
             items.append({
                 "part_number": part,
