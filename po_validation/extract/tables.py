@@ -89,11 +89,12 @@ HEADER_SYNONYMS: dict[str, list[str]] = {
 
 # Rows that end a table region.
 STOP_RE = re.compile(
-    r"^\s*(?:sub\s*total|subtotal|grand\s*total|total\s*(?:due|amount|net|order|"
+    r"(?:^\s*|^\s*\d+\s+|\b)(?:sub\s*total|subtotal|grand\s*total|total\s*(?:due|amount|net|order|"
     r"purchase\s*order)|p\.?o\.?\s*total|order\s*total|total\s*\(|freight\b|"
     r"shipping\s*(?:and|&)|sales\s*tax|^tax$|terms\s*(?:and|&)\s*conditions|"
     r"remit\s*to|authorized\s*signature|continued\s*on\s*next|"
-    r"vendor\s*comments|comments\s*:|please\s*send|thank\s*you|reseller\b|end\s*user\b)", re.I)
+    r"vendor\s*comments|comments\s*:|please\s*send|thank\s*you|reseller\b|end\s*user\b|"
+    r"this\s+purchase\s+order\s+was\s+sent\s+by)\b", re.I)
 
 # Text that is never a line item, even inside the table region.
 NOISE_RE = re.compile(
@@ -381,7 +382,7 @@ def find_regions(view: PdfView, min_score: int = 6) -> list[Region]:
                     if any(x in r.text for x in ["CONTINUED", "MERCHANDISE", "P.O. NUMBER"]):
                         break
                     continue
-                if STOP_RE.match(r.norm()):
+                if STOP_RE.search(r.norm()):
                     break
                 if r.norm() in footer_keys:
                     continue
@@ -397,7 +398,7 @@ def find_regions(view: PdfView, min_score: int = 6) -> list[Region]:
             for r in rows[body_start:body_end]:
                 if any(x in r.text for x in ["CONTINUED ON NEXT PAGE", "MERCHANDISE SHIPPED"]):
                     break
-                if STOP_RE.match(r.norm()):
+                if STOP_RE.search(r.norm()):
                     break
                 if r.norm() in footer_keys:
                     continue
@@ -440,7 +441,7 @@ def is_anchor(row: Row, cols: dict[str, Column]) -> bool:
     least one number. Requiring both keeps wrapped description rows and
     embedded tax tables from spawning phantom items.
     """
-    if NOISE_RE.match(row.norm()):
+    if NOISE_RE.match(row.norm()) or STOP_RE.search(row.norm()):
         return False
 
     key_field = "line_no" if "line_no" in cols else "part_number"

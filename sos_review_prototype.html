@@ -1258,7 +1258,15 @@ textarea.modern-input {
         html += '<button type="button" class="btn-action-primary" data-action="approve" ' + (!isApprovable ? 'disabled style="opacity:0.5;cursor:not-allowed;" title="Review all flagged exceptions first"' : '') + '>⚡ 1-Click Salesforce Booking</button>';
       }
     } else {
+      var sfdcBfUrl = o.sfdcRecordUrl || (o.sfdcRecordId ? ("https://f5--poclab.sandbox.my.salesforce.com/lightning/r/Booking_Form__c/" + o.sfdcRecordId + "/view") : "");
+      var sfdcOppUrl = o.sfdcOppUrl || (o.sfdcOppId ? ("https://f5--poclab.sandbox.my.salesforce.com/lightning/r/Opportunity/" + o.sfdcOppId + "/view") : "");
       html += '<span class="status-pill status-ready" style="font-size:13px;padding:6px 14px;">✅ Booking Form Active in Salesforce</span>';
+      if (sfdcBfUrl) {
+        html += '<a href="' + escapeHtml(sfdcBfUrl) + '" target="_blank" class="btn-action-primary" style="text-decoration:none;font-size:12px;padding:6px 14px;background:var(--f5-blue-600);">⚡ View Booking Form (' + escapeHtml(o.sfdcRecordName || o.sfdcRecordId || 'Lightning') + ')</a>';
+      }
+      if (sfdcOppUrl) {
+        html += '<a href="' + escapeHtml(sfdcOppUrl) + '" target="_blank" class="btn-action-outline" style="text-decoration:none;font-size:12px;padding:6px 14px;border-color:var(--f5-navy-700);color:var(--f5-navy-800);">🏢 View Opportunity</a>';
+      }
     }
     html += '</div>';
     html += '</div>';
@@ -1774,7 +1782,11 @@ textarea.modern-input {
         if (resp && resp.success) {
           o.status = "booked";
           o.sfdcRecordId = resp.booking_form_id;
+          o.sfdcRecordName = resp.booking_form_name;
           o.sfdcRecordUrl = resp.url;
+          o.sfdcOppId = resp.opportunity_id;
+          o.sfdcOppName = resp.opportunity_name;
+          o.sfdcOppUrl = resp.opportunity_url;
           o.pdfAttached = resp.pdf_attached;
           o.attachment = resp.attachment;
           saveState();
@@ -1798,7 +1810,7 @@ textarea.modern-input {
   function showBookingSuccessModal(o, resp) {
     var modalHost = document.getElementById("modalHost");
     var html = '<div class="modal-backdrop-blur">';
-    html += '<div class="modern-modal-card" style="max-width:640px;">';
+    html += '<div class="modern-modal-card" style="max-width:680px;">';
     html += '<div class="modal-header-bar" style="background:linear-gradient(135deg, #065F46 0%, #047857 100%);">';
     html += '<h3>✅ Salesforce Booking Form Created</h3>';
     html += '<button type="button" class="btn-close-modal" id="closeModalBtn">&times;</button>';
@@ -1811,15 +1823,26 @@ textarea.modern-input {
     html += '<p style="margin:0;color:var(--text-muted);font-size:13px;">Target Instance: <strong>f5--poclab.sandbox.my.salesforce.com</strong> &bull; ' + (resp.dry_run ? '<span style="color:#D97706;font-weight:700;">Demo Simulation Mode</span>' : '<span style="color:#16A34A;font-weight:700;">Live Sandbox Commit</span>') + '</p>';
     html += '</div>';
 
+    var bfName = resp.booking_form_name || (resp.booking_form_id ? resp.booking_form_id : "Created");
+    var oppId = resp.opportunity_id || o.opportunity;
+    var oppName = resp.opportunity_name || ("Opportunity " + oppId);
+    var oppUrl = resp.opportunity_url || (oppId ? ("https://f5--poclab.sandbox.my.salesforce.com/lightning/r/Opportunity/" + oppId + "/view") : "");
+
     html += '<div style="background:#F8FAFC;border:1px solid var(--border-light);border-radius:var(--radius-md);padding:16px;margin-bottom:20px;font-size:13px;">';
-    html += '<div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid #E2E8F0;">';
-    html += '<span style="color:var(--text-muted);">Salesforce Record ID:</span>';
-    html += '<strong style="font-family:monospace;color:var(--f5-navy-900);">' + escapeHtml(resp.booking_form_id) + '</strong>';
+    html += '<div style="display:flex;justify-content:space-between;padding:7px 0;border-bottom:1px solid #E2E8F0;align-items:center;">';
+    html += '<span style="color:var(--text-muted);">Salesforce Booking Form:</span>';
+    html += '<span style="text-align:right;"><strong style="font-size:14px;color:var(--f5-navy-900);">' + escapeHtml(bfName) + '</strong> <code style="font-size:11px;color:var(--text-muted);background:#EDF2F7;padding:2px 5px;border-radius:3px;margin-left:4px;">' + escapeHtml(resp.booking_form_id) + '</code></span>';
     html += '</div>';
-    html += '<div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid #E2E8F0;">';
-    html += '<span style="color:var(--text-muted);">Linked Opportunity:</span>';
-    html += '<strong style="font-family:monospace;">' + escapeHtml(o.opportunity) + '</strong>';
+    html += '<div style="display:flex;justify-content:space-between;padding:7px 0;border-bottom:1px solid #E2E8F0;align-items:center;">';
+    html += '<span style="color:var(--text-muted);">Linked Sandbox Opportunity:</span>';
+    html += '<span style="text-align:right;"><strong style="color:#0F172A;">' + escapeHtml(oppName) + '</strong> <code style="font-size:11px;color:var(--text-muted);background:#EDF2F7;padding:2px 5px;border-radius:3px;margin-left:4px;">' + escapeHtml(oppId) + '</code></span>';
     html += '</div>';
+    if (o.opportunity && o.opportunity !== oppId) {
+      html += '<div style="display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px solid #E2E8F0;font-size:11.5px;color:var(--text-muted);">';
+      html += '<span>CPQ Quote Opportunity Ref:</span>';
+      html += '<span style="font-family:monospace;">' + escapeHtml(o.opportunity) + ' (Mapped to dedicated sandbox opp)</span>';
+      html += '</div>';
+    }
     html += '<div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid #E2E8F0;">';
     html += '<span style="color:var(--text-muted);">Booked Total:</span>';
     html += '<strong style="color:#0F172A;">' + fmtMoney(o.booking.amount) + '</strong>';
@@ -1830,8 +1853,13 @@ textarea.modern-input {
     html += '</div>';
     html += '</div>';
 
-    html += '<div style="display:flex;gap:12px;justify-content:center;">';
-    html += '<a href="' + escapeHtml(resp.url) + '" target="_blank" class="btn-action-primary" style="padding:10px 20px;font-size:13.5px;text-decoration:none;">⚡ Open Booking Form in Salesforce Lightning</a>';
+    html += '<div style="display:flex;gap:12px;justify-content:center;flex-wrap:wrap;">';
+    if (resp.url) {
+      html += '<a href="' + escapeHtml(resp.url) + '" target="_blank" class="btn-action-primary" style="padding:10px 18px;font-size:13px;text-decoration:none;">⚡ Open Booking Form (' + escapeHtml(bfName) + ')</a>';
+    }
+    if (oppUrl) {
+      html += '<a href="' + escapeHtml(oppUrl) + '" target="_blank" class="btn-action-outline" style="padding:10px 18px;font-size:13px;text-decoration:none;border-color:var(--f5-navy-700);color:var(--f5-navy-800);">🏢 Open Opportunity in Poclab</a>';
+    }
     html += '</div>';
     html += '</div>';
 
@@ -2095,7 +2123,11 @@ textarea.modern-input {
           if (target) {
             target.status = "booked";
             target.sfdcRecordId = msg.data.booking_form_id;
+            target.sfdcRecordName = msg.data.booking_form_name;
             target.sfdcRecordUrl = msg.data.url;
+            target.sfdcOppId = msg.data.opportunity_id;
+            target.sfdcOppName = msg.data.opportunity_name;
+            target.sfdcOppUrl = msg.data.opportunity_url;
             target.pdfAttached = msg.data.pdf_attached;
             saveState();
             updateApp();

@@ -49,12 +49,14 @@ PARTY_LABELS: dict[str, list[str]] = {
                 r"bill\s*(?:to)?\s*/\s*ship\s*to(?:\s*(?:company\s*name|address))?",
                 r"bill\s*/\s*ship\s*to"],
     "end_user": [r"end[-\s]*user", r"end[-\s]*customer", r"end[-\s]*user\s*info",
+                 r"end[-\s]*(?:user|customer)\s*(?:details|info)?",
                  r"ship\s*to\s*/\s*end[-\s]*user\s*info", r"ship\s*to\s*/\s*end[-\s]*user",
                  r"end[-\s]*customer\s*name", r"end[-\s]*user\s*company\s*name",
                  r"end[-\s]*user\s*name",
                  r"end[-\s]*customer\s*address", r"\beu\s*:", r"\beu\s*#",
                  r"customer\s*contact(?:\s*information)?", r"customer\s*information"],
     "reseller": [r"reseller", r"re[-\s]*seller", r"distributor",
+                 r"reseller\s*(?:details|info)?",
                  r"reseller\s*company\s*name", r"reseller\s*name",
                  r"partner(?:\s*name|\s*po|\s*company)?", r"partner\s*:\s*[A-Za-z0-9]"],
     "remit_to": [r"remit\s*to", r"payment\s*address"],
@@ -165,11 +167,24 @@ class Party:
                         r"this\s*purchase\s*is\s*made|all\s*purchases\s*made|"
                         r"questions|contact\s*(?:person|name|phone|email)?|"
                         r"terms\b|terms\s*of\s*delivery|payment\s*terms|"
+                        r"incoterms|carrier\s*details|quote\s*id|"
                         r"reference\s*eu|ship\s*to|importer\s*of\s*record|consignee|purchase\s*order|supplier\s*tax)\b", s, re.I):
+                return None
+            if re.search(r"\b(?:details\s+carrier\s+details|carrier\s+details)\b", s, re.I):
                 return None
             if re.search(r"\b(?:to\s*provide|status\s*on|department\s*at|services\s*department|when\s*shipment|provide\s*documents)\b", s, re.I):
                 return None
             if re.search(r"\b(?:at|the|of|for|to|by|in|on|with|from)$", s, re.I):
+                return None
+            if not any(c.isalpha() for c in s):
+                return None
+            if re.fullmatch(r"[\+\(\)\d\s\.\-\/]+", s) or re.search(r"^\+?[\d\s\(\)\.\-]{7,}$", s):
+                return None
+            if re.search(r"\b(?:technology\s+park|industrial\s+park|business\s+park)\b", s, re.I):
+                return None
+            if re.search(r",\s*[A-Za-z\s]+(?:\s+\d{4,6})?,\s*(?:Egypt|USA|Canada|UK|UAE|Saudi|Singapore|India)\b", s, re.I):
+                return None
+            if re.search(r"\b(?:building|bldg|suite|ste|floor|fl)\b.*,\s*[A-Za-z\s]+", s, re.I):
                 return None
             if not is_explicit_company and (STREET_RE.search(s) or CITY_LINE_RE.search(s) or re.match(r"^\d+\s+[A-Za-z]", s)) and not ORG_WORDS.search(s):
                 return None
@@ -206,25 +221,29 @@ class Party:
     @property
     def contact_name(self) -> Optional[str]:
         for ln in self.lines:
-            m = re.search(r"(?:attn|attention|contact|poc)\s*:?\s*(.+)", ln, re.I)
+            m = re.search(r"(?:attn|attention|contact|poc|person)\s*:?\s*(.+)", ln, re.I)
             if m:
                 cand = m.group(1).strip(" .:,")
+                cand = re.sub(r"^(?:person|to|name|poc)\s*[:\-]?\s*", "", cand, flags=re.I).strip(" .:,")
                 cand = re.sub(r"\(.*?\)", "", cand).strip()
                 if cand and not ORG_WORDS.search(cand):
                     return cand[:80]
+            # Dell PO format: "Harris, Byran L (Bryan.L.Harris@dell.com)" or "John Doe <jdoe@x.com>"
+            m_del = re.match(r"^([A-Z][a-z]+(?:,\s*[A-Z][a-z]+(?:\s+[A-Z]\.?)?|\s+[A-Z][a-z]+))\s*[\(<][^>@\)]+@[^>@\)]+[\)>]", ln.strip())
+            if m_del:
+                return m_del.group(1).strip()
         for ln in self.lines[1:]:
             if ORG_WORDS.search(ln) or EMAIL_RE.search(ln):
                 continue
-            # Skip address lines. "2211 North First Street" and "One Dell
-            # Way" both match a two-capitalised-words pattern, which is how
-            # "North First", "One Dell" and "Gateway Commerce" ended up
-            # reported as the Ship To contact on four of the six real POs.
+            # Skip address lines.
             if (STREET_RE.search(ln) or CITY_LINE_RE.search(ln)
                     or re.match(r"^\s*\d", ln)):
                 continue
             m = PERSON_RE.search(ln)
             if m:
-                return (m.group(1) or m.group(2)).strip()
+                cand = (m.group(1) or m.group(2)).strip()
+                cand = re.sub(r"^(?:person|to|name|poc)\s*[:\-]?\s*", "", cand, flags=re.I).strip(" .:,")
+                return cand
         return None
 
     @property
@@ -233,7 +252,12 @@ class Party:
 
     @property
     def has_care_of(self) -> bool:
-        return bool(CARE_OF_RE.search(self.text))
+        for ln in self.lines:
+            if re.search(r"\b(?:c/o|care\s+of)\s*f5\b", ln, re.I):
+                continue
+            if CARE_OF_RE.search(ln):
+                return True
+        return False
 
     @property
     def has_street_address(self) -> bool:
@@ -301,8 +325,8 @@ def _labels_in_row(row: Row) -> list[tuple[str, str, float, float]]:
             norm = text.strip(" *:").lower()
             if any(k in norm for k in ("contact person", "contact name", "contact phone", "contact email")):
                 continue
-            next_w = row.words[i + n].text.lower().strip(" :*") if i + n < len(row.words) else ""
-            if next_w in ("contact", "loc", "phone", "email", "address", "city", "state", "zip", "country", "fax"):
+            next_w = row.words[i + n].text.lower().strip(" :*,-#/") if i + n < len(row.words) else ""
+            if next_w in ("contact", "loc", "phone", "email", "address", "city", "state", "zip", "country", "fax", "po", "po#", "person", "mobile"):
                 continue
             role = next((r for r, pats in PARTY_LABELS.items()
                          if any(re.fullmatch(p, norm, re.I) for p in pats)), None)
@@ -381,7 +405,7 @@ def extract_parties(view: PdfView, max_lines: int = 16) -> list[Party]:
                 has_next = (k + 1 < len(labels))
                 tail_band_x1 = labels[k + 1][2] - 8 if has_next else page.width + 40
                 is_full_width_header = bool(re.search(r"customer\s*(?:contact|information)", label, re.I))
-                band_x0 = lx0 - 8
+                band_x0 = 0.0 if k == 0 else (lx0 - 8)
                 band_x1 = page.width - 36 if is_full_width_header else min(tail_band_x1, lx0 + MAX_BAND_WIDTH)
 
                 lines: list[str] = []
@@ -389,18 +413,37 @@ def extract_parties(view: PdfView, max_lines: int = 16) -> list[Party]:
                     [w for w in row.words if w.x0 >= lx1 - 1 and w.xmid <= tail_band_x1],
                     key=lambda w: w.x0)
                 if tail_words and tail_words[0].x0 - lx1 <= MAX_TAIL_GAP:
-                    tail = re.sub(r"\(cid:\s*\d+\)", "", " ".join(w.text for w in tail_words)).strip(" :*,\t")
-                    if tail:
-                        lines.append(tail)
+                    filtered_tail = []
+                    for tw in tail_words:
+                        if filtered_tail and (tw.x0 - filtered_tail[-1].x1 > 25.0):
+                            break
+                        if re.match(r"^(?:incoterms|carrier\s*details|quote\s*id|fca)\b", tw.text, re.I):
+                            break
+                        filtered_tail.append(tw)
+                    if filtered_tail:
+                        tail = re.sub(r"\(cid:\s*\d+\)", "", " ".join(w.text for w in filtered_tail)).strip(" :*,\t")
+                        if tail:
+                            lines.append(tail)
 
                 prev_bottom = row.bottom
                 for nxt in rows[i + 1: i + 1 + max_lines * 2]:
                     full_row_text = " ".join(w.text for w in nxt.words)
-                    m_sub = re.match(
-                        r"^(?:reseller|end[-\s]*user)\s+(?:contact\s*name|contact\s*phone|contact\s*email|loc\s*name|address|city[,\s]+state[,\s]+zip|country|phone|email)\s*(.*)",
-                        full_row_text, re.I)
+                    # Stop if we hit an opposing party block header
+                    if re.match(r"^\**\s*(?:reseller|end[-\s]*(?:user|customer)|ship[-\s]*to|bill[-\s]*to|vendor|sold[-\s]*to)\b", full_row_text, re.I):
+                        if role == "end_user" and re.match(r"^\**\s*reseller\b", full_row_text, re.I):
+                            break
+                        if role == "reseller" and re.match(r"^\**\s*end[-\s]*(?:user|customer)\b", full_row_text, re.I):
+                            break
+
+                    sub_pat = (
+                        r"^reseller\s+(?:company\s*name|customer\s*name|name|contact\s*name|contact\s*phone|contact\s*email|loc\s*name|address|city[,\s]+state[,\s]+zip|country|phone|email)\s*(.*)"
+                        if role == "reseller" else
+                        r"^end[-\s]*(?:user|customer)\s+(?:company\s*name|customer\s*name|name|contact\s*name|contact\s*phone|contact\s*email|loc\s*name|address|city[,\s]+state[,\s]+zip|country|phone|email)\s*(.*)"
+                    )
+                    m_sub = re.match(sub_pat, full_row_text, re.I)
                     if m_sub and role in ("reseller", "end_user"):
                         sub_val = re.sub(r"\(cid:\s*\d+\)", "", m_sub.group(1)).strip(" :*,\t")
+                        sub_val = re.sub(r"\s+(?:carrier\s*name|carrier\s*details|incoterms|quote\s*id).*$", "", sub_val, flags=re.I).strip(" :*,\t")
                         if sub_val:
                             lines.append(sub_val)
                         prev_bottom = nxt.bottom
@@ -422,6 +465,7 @@ def extract_parties(view: PdfView, max_lines: int = 16) -> list[Party]:
                                 r"invoicing\s*terms|this\s*purchase\s*is\s*made|"
                                 r"qty\b|quantity\b|unit\s*price|extended\s*price|"
                                 r"comments\b|total\s*(?:purchase|order)|payment\s*in|"
+                                r"incoterms\b|carrier\s*details\b|quote\s*id\b|"
                                 r"please\s*(?:send|electronic|contact))",
                                 text, re.I):
                         break

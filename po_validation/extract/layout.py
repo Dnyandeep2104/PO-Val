@@ -386,9 +386,12 @@ class PdfView:
                 joined = " ".join(w.text for w in chunk).strip(" :#-")
                 if rx.fullmatch(joined):
                     colon = (i + n < len(row.words) and row.words[i + n].text.startswith(":")) or any(":" in w.text for w in chunk)
-                    starts_cell = i == 0 or (i > 0 and row.words[i - 1].text.endswith("|"))
+                    gap_before = (chunk[0].x0 - row.words[i - 1].x1) if i > 0 else 999.0
+                    gap_after = (row.words[i + n].x0 - chunk[-1].x1) if i + n < len(row.words) else 999.0
+                    starts_cell = i == 0 or (i > 0 and (row.words[i - 1].text.endswith("|") or gap_before >= 12.0))
+                    ends_cell = (i + n == len(row.words)) or (gap_after >= 12.0) or colon
                     short_row = len(row.words) <= 8
-                    if colon or starts_cell or short_row:
+                    if colon or (starts_cell and ends_cell) or starts_cell or short_row:
                         return chunk, min(w.x0 for w in chunk), max(w.x1 for w in chunk)
         return None
 

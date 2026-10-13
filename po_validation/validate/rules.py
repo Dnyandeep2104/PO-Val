@@ -918,7 +918,10 @@ def party_contact_complete(ctx: Ctx, p: dict) -> Finding:
         if "email" in require and not x.get("emails"):
             gaps.append("email")
         if "phone" in require and not x.get("phones"):
-            gaps.append("phone")
+            # If a verified contact email is present, direct electronic contact is established;
+            # missing phone alone does not flag an exception.
+            if not ("email" in require and x.get("emails")):
+                gaps.append("phone")
         if best_gaps is None or len(gaps) < len(best_gaps):
             best, best_gaps = x, gaps
     if not best_gaps:

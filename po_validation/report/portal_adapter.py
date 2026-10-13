@@ -25,11 +25,44 @@ def format_money(val: Any) -> str:
         return str(val)
 
 
+def is_plausible_company_name(name: Optional[str]) -> bool:
+    if not name:
+        return False
+    s = name.strip()
+    if len(s) < 2:
+        return False
+    # Must contain at least one ASCII letter
+    if not re.search(r"[a-zA-Z]", s):
+        return False
+    # Exclude phone numbers / pure numbers / fax
+    if re.fullmatch(r"[\+\(\)\d\s\.\-\/#xext]+", s, re.I):
+        return False
+    # Exclude street addresses
+    if re.search(r"^\d+[\s\w\.\-]+(?:\b(?:street|st|avenue|ave|road|rd|boulevard|blvd|lane|ln|way|court|ct|drive|dr|parkway|pkwy|highway|hwy|suite|ste|bldg|building|floor|fl)\b)", s, re.I):
+        return False
+    if re.search(r"\b(?:technology\s+park|business\s+park|industrial\s+park|corporate\s+park)\b", s, re.I):
+        return False
+    if re.search(r",\s*(?:egypt|usa|canada|mexico|united states|singapore|azerbaijan|uk|uae)\s*$", s, re.I):
+        return False
+    if re.search(r"\b(?:p\.?\s*o\.?\s*box|post\s*office\s*box)\b", s, re.I):
+        return False
+    # Exclude sentence fragments ending in prepositions / conjunctions
+    if re.search(r"\b(?:at|the|of|for|to|by|in|on|with|from|and|or|c/o)\s*$", s, re.I):
+        return False
+    # Exclude sentences / commentary
+    if re.search(r"\b(?:to provide\b|status on\b|confirmation of\b|please contact\b|terms and conditions\b|availability and\b|department at\b|attention to\b|attn:\b|fao:\b|carrier details\b)", s, re.I):
+        return False
+    # Exclude bare label artifacts
+    if re.fullmatch(r"(?:reseller|reseller\s*partner|reseller\s*contact(?:\s*name)?|partner\s*name|contact\s*name|customer|vendor|unknown(?:\s*customer)?|bill\s*to|ship\s*to|end\s*user|sold\s*to|carrier(?:\s*details)?)", s, re.I):
+        return False
+    return True
+
+
 def clean_company_name(name: Optional[str]) -> Optional[str]:
     if not name:
         return None
     s = re.sub(r"\(cid:\s*\d+\)", "", name).strip(" :*,\t")
-    s = re.sub(r"^(?:company|partner|customer|reseller|vendor)\s*[:\-]?\s+", "", s, flags=re.I)
+    s = re.sub(r"^(?:reseller partner|reseller contact|partner name|reseller name|reseller|company|partner|customer|vendor)\s*[:\-]?\s+", "", s, flags=re.I)
     s = re.sub(r"^(?:company|partner|reseller|vendor)\s+", "", s, flags=re.I)
     if re.search(r"\bverizon\b", s, re.I):
         if re.search(r"\bbusiness\b", s, re.I):
@@ -68,33 +101,52 @@ def result_to_portal_order(
     ship_to_party = po.party("ship_to")
     end_user_party = po.party("end_user")
 
-    raw_from = (
-        po.reseller_name
-        or (reseller_party or {}).get("name")
-        or (bill_to_party or {}).get("name")
-        or (ship_to_party or {}).get("name")
-        or (end_user_party or {}).get("name")
-        or (q.account_name if q else None)
-        or (q.end_user_name if q else None)
-        or "Unknown Customer"
-    )
-    from_name = clean_company_name(raw_from) or "Unknown Customer"
+    reseller_candidates = []
+    if po.reseller_name:
+        reseller_candidates.append(po.reseller_name)
+    for p in po.parties_of("reseller"):
+        if p.get("name"):
+            reseller_candidates.append(p.get("name"))
+    if q and q.reseller_name:
+        reseller_candidates.append(q.reseller_name)
 
-    # Channel classification
-    from_lower = from_name.lower()
-    reseller_name_lower = (po.reseller_name or (reseller_party or {}).get("name") or "").lower()
-    bill_to_name_lower = ((bill_to_party or {}).get("name") or "").lower()
+    chosen_reseller = None
+    for cand in reseller_candidates:
+        cleaned = clean_company_name(cand)
+        if cleaned and is_plausible_company_name(cleaned):
+            chosen_reseller = cleaned
+            break
 
-    if any(d in from_lower or d in reseller_name_lower for d in DISTRIBUTORS):
-        channel = "Distributor"
-    elif any(r in from_lower or r in reseller_name_lower or r in bill_to_name_lower for r in KNOWN_RESELLERS):
+    if chosen_reseller:
+        from_name = chosen_reseller
         channel = "Reseller Partner"
-    elif po.reseller_name or (reseller_party and reseller_party.get("name")):
-        channel = "Reseller Partner"
-    elif any(d in bill_to_name_lower for d in DISTRIBUTORS):
-        channel = "Distributor"
     else:
-        channel = "Direct Customer"
+        candidates = [
+            (bill_to_party or {}).get("name"),
+            (ship_to_party or {}).get("name"),
+            (end_user_party or {}).get("name"),
+            (q.account_name if q else None),
+            (q.end_user_name if q else None),
+        ]
+        from_name = "Unknown Customer"
+        for cand in candidates:
+            cleaned = clean_company_name(cand)
+            if cleaned and is_plausible_company_name(cleaned):
+                from_name = cleaned
+                break
+
+        # Channel classification
+        from_lower = from_name.lower()
+        bill_to_name_lower = ((bill_to_party or {}).get("name") or "").lower()
+
+        if any(d in from_lower for d in DISTRIBUTORS):
+            channel = "Distributor"
+        elif any(r in from_lower for r in KNOWN_RESELLERS):
+            channel = "Reseller Partner"
+        elif any(d in bill_to_name_lower for d in DISTRIBUTORS):
+            channel = "Distributor"
+        else:
+            channel = "Direct Customer"
 
     # Filename & PDF data
     filename = doc_filename or (Path(po.source_id).name if po.source_id else f"{po_num}.pdf")

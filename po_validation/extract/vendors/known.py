@@ -78,10 +78,23 @@ class SynnexExtractor(BaseExtractor):
                 return token
         return super().po_number(view)
 
+    def extract(self, view: PdfView, source_id: str):
+        po = super().extract(view, source_id)
+        resellers = [p for p in po.parties if p.get("role") == "reseller" and p.get("name")]
+        if resellers and not po.reseller_name:
+            po.reseller_name = resellers[0]["name"]
+        return po
+
 
 class WwtExtractor(BaseExtractor):
     name = "wwt"
     fingerprints = ["world wide technology", "wwt"]
+
+    def extract(self, view: PdfView, source_id: str):
+        po = super().extract(view, source_id)
+        if not po.reseller_name:
+            po.reseller_name = "WORLD WIDE TECHNOLOGY LLC"
+        return po
 
 
 class CarahsoftExtractor(BaseExtractor):

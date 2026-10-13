@@ -21,12 +21,34 @@ import shutil
 import ssl
 import subprocess
 import time
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Optional
 import urllib.error
 import urllib.request
 from urllib.parse import urlencode
 
+import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
+
 from ..booking.builder import BookingForm, BookingFormBuilder
+
+_SHARED_SESSION: Optional[requests.Session] = None
+
+
+def _get_shared_session() -> requests.Session:
+    global _SHARED_SESSION
+    if _SHARED_SESSION is None:
+        session = requests.Session()
+        adapter = HTTPAdapter(
+            pool_connections=20,
+            pool_maxsize=20,
+            max_retries=Retry(total=2, backoff_factor=0.2, status_forcelist=[502, 503, 504]),
+        )
+        session.mount("https://", adapter)
+        session.mount("http://", adapter)
+        _SHARED_SESSION = session
+    return _SHARED_SESSION
 
 log = logging.getLogger(__name__)
 
@@ -118,32 +140,27 @@ def _http_request(
     data: Any = None,
     timeout: int = 30,
 ) -> _HttpResponse:
-    if params:
-        sep = "&" if "?" in url else "?"
-        url = f"{url}{sep}{urlencode(params)}"
+    session = _get_shared_session()
+    cafile = (
+        os.environ.get("REQUESTS_CA_BUNDLE")
+        or os.environ.get("CURL_CA_BUNDLE")
+        or os.environ.get("SSL_CERT_FILE")
+    )
+    verify = cafile if (cafile and os.path.exists(cafile)) else True
 
-    body = None
-    hdrs = dict(headers or {})
-    if json_data is not None:
-        body = json.dumps(json_data).encode("utf-8")
-        hdrs["Content-Type"] = "application/json"
-    elif data is not None:
-        if isinstance(data, dict):
-            body = urlencode(data).encode("utf-8")
-            hdrs["Content-Type"] = "application/x-www-form-urlencoded"
-        elif isinstance(data, str):
-            body = data.encode("utf-8")
-        else:
-            body = data
-
-    ctx = _get_ssl_context()
-    req = urllib.request.Request(url, data=body, headers=hdrs, method=method)
     try:
-        with urllib.request.urlopen(req, timeout=timeout, context=ctx) as r:
-            return _HttpResponse(r.status, r.read())
-    except urllib.error.HTTPError as exc:
-        return _HttpResponse(exc.code, exc.read())
-    except Exception as exc:
+        resp = session.request(
+            method=method,
+            url=url,
+            headers=headers,
+            params=params,
+            json=json_data,
+            data=data,
+            timeout=timeout,
+            verify=verify,
+        )
+        return _HttpResponse(resp.status_code, resp.content)
+    except requests.exceptions.RequestException as exc:
         raise SalesforceError(f"Connection failed: {exc}") from exc
 
 
@@ -192,6 +209,7 @@ class SalesforceClient:
         self.dry_run = dry_run
         self.token_refresher = token_refresher
         self._org_info_cache: Optional[dict] = None
+        self._opp_name_cache: dict[str, str] = {}
 
     @classmethod
     def from_env(cls, dry_run: Optional[bool] = None) -> "SalesforceClient":
@@ -336,6 +354,7 @@ class SalesforceClient:
             try:
                 matches = self.query(f"SELECT Id, Name, StageName FROM Opportunity WHERE Id = '{requested_id}' LIMIT 1")
                 if matches:
+                    self._opp_name_cache[requested_id] = matches[0].get("Name") or requested_id
                     return requested_id, False, f"Opportunity {requested_id} found in org."
             except Exception as q_exc:
                 log.info("Requested opportunity %s lookup failed (%s); falling back to stand-in.", requested_id, q_exc)
@@ -347,6 +366,7 @@ class SalesforceClient:
                 matches = self.query(f"SELECT Id, Name, StageName FROM Opportunity WHERE Id = '{standin}' LIMIT 1")
                 if matches:
                     name = matches[0].get("Name")
+                    self._opp_name_cache[standin] = name or standin
                     return standin, True, f"Opportunity {requested_id or 'none'} not in sandbox; using stand-in '{name}' ({standin})."
             except Exception as s_exc:
                 log.warning("Stand-in opportunity %s lookup failed: %s", standin, s_exc)
@@ -356,6 +376,7 @@ class SalesforceClient:
             open_opps = self.query("SELECT Id, Name, StageName FROM Opportunity WHERE IsClosed = false ORDER BY LastModifiedDate DESC LIMIT 1")
             if open_opps:
                 opp = open_opps[0]
+                self._opp_name_cache[opp["Id"]] = opp.get("Name") or opp["Id"]
                 return opp["Id"], True, f"Opportunity {requested_id or 'none'} not in sandbox; using '{opp.get('Name')}' ({opp['Id']})."
         except Exception as o_exc:
             log.warning("Fallback open opportunity query failed: %s", o_exc)
@@ -468,41 +489,6 @@ class SalesforceClient:
         return None
 
     # ------------------------------------------------------------- main booking
-    def book_portal_order(
-        self,
-        order: dict,
-        approver_name: str,
-        reviewer_edits: Optional[dict] = None,
-        notes_to_ro: Optional[str] = None,
-        audit_note: Optional[str] = None,
-        pdf_data: Optional[bytes] = None,
-        acknowledged_flags: Optional[list[str]] = None,
-    ) -> dict:
-        """Create the real Booking Form and attach artifacts."""
-        notes_to_ro = notes_to_ro or audit_note or ""
-        po_num = (reviewer_edits or {}).get("po_number") or order.get("po_number") or order.get("po") or ""
-        amount_raw = (reviewer_edits or {}).get("total_amount") or order.get("total_amount") or (order.get("booking") or {}).get("amount") or 0.0
-        amount = float(amount_raw)
-        order_type = (reviewer_edits or {}).get("sales_order_type") or order.get("order_type") or (order.get("booking") or {}).get("orderType") or "Standard"
-        req_opp = order.get("opportunity_id") or order.get("opportunity") or (order.get("booking") or {}).get("opportunity") or ""
-        fname = order.get("filename") or order.get("file") or f"{po_num}.pdf"
-
-        # Safe simulation response
-        if self.dry_run:
-            return {
-                "success": True,
-                "simulated": True,
-                "dry_run": True,
-                "booking_form_id": f"simulated_{po_num}",
-                "url": None,
-                "pdf_attached": False,
-                "would_attach": {"filename": fname, "bytes": len(pdf_data or b"")},
-                "notes_count": 1,
-                "message": "Simulation only. Nothing was written to Salesforce. Restart with --live to write to poclab.",
-            }
-
-        self.assert_sandbox()
-
     def resolve_opportunity_for_order(self, req_opp: str, order: dict, po_num: str, amount: float) -> tuple[str, bool, str]:
         """In sandbox (poclab), find or create a dedicated Opportunity matching the PO so that
         the Booking Form displays the real PO #, Opportunity Name, Account, Reseller, and Amount!"""
@@ -511,7 +497,9 @@ class SalesforceClient:
             try:
                 matches = self.query(f"SELECT Id, Name FROM Opportunity WHERE Id = '{req_opp}' LIMIT 1")
                 if matches:
-                    return req_opp, False, f"Opportunity {req_opp} found in org."
+                    opp_id = matches[0]["Id"]
+                    self._opp_name_cache[opp_id] = matches[0].get("Name") or opp_id
+                    return opp_id, False, f"Opportunity {req_opp} found in org."
             except Exception:
                 pass
 
@@ -521,6 +509,7 @@ class SalesforceClient:
             matches = self.query(f"SELECT Id, Name, Amount FROM Opportunity WHERE po_to_f5__c = '{safe_po}' ORDER BY CreatedDate DESC LIMIT 1")
             if matches:
                 opp_id = matches[0]["Id"]
+                self._opp_name_cache[opp_id] = matches[0].get("Name") or opp_id
                 return opp_id, True, f"Found dedicated Opportunity {opp_id} for PO {po_num}."
         except Exception:
             pass
@@ -543,6 +532,7 @@ class SalesforceClient:
             resp = self._call("POST", "/sobjects/Opportunity", json_data=payload)
             if resp.status_code in (200, 201):
                 opp_id = resp.json().get("id")
+                self._opp_name_cache[opp_id] = opp_name
                 # Add line item to roll up Amount
                 try:
                     self._call("PATCH", f"/sobjects/Opportunity/{opp_id}", json_data={"Pricebook2Id": "01s3000000004HEAAY"})
@@ -630,43 +620,83 @@ class SalesforceClient:
             form_id = resp.json().get("id")
             log.info("Created Booking_Form__c %s in %s", form_id, self.instance_url)
 
-        # 5. Attach original PO PDF
+        # 5. Parallel post-booking actions (PDF attach, notes, friendly name query)
         pdf_attached = False
-        if pdf_data:
+
+        def _do_attach_pdf():
+            nonlocal pdf_attached
+            if pdf_data:
+                try:
+                    self.attach_pdf(form_id, f"PO_{po_num}.pdf", pdf_data)
+                    pdf_attached = True
+                except Exception as exc:
+                    log.warning("Could not attach PDF to %s: %s", form_id, exc)
+
+        def _do_attach_signoff_note():
+            signoff_lines = [
+                f"Approved by: {approver_name}",
+                f"Sign-off timestamp: {time.strftime('%Y-%m-%d %H:%M:%S UTC', time.gmtime())}",
+                f"Engine outcome: {order.get('status', 'VALIDATED')}",
+                f"Measured processing time: {order.get('latency_ms', 0)} ms",
+            ]
+            if notes_to_ro:
+                signoff_lines.append(f"\nReviewer Notes to RO:\n{notes_to_ro}")
+            if acknowledged_flags:
+                signoff_lines.append(f"\nExceptions acknowledged by {approver_name}:")
+                for flag in acknowledged_flags:
+                    signoff_lines.append(f"  • {flag}")
+            if substituted:
+                signoff_lines.append(f"\nNote: Dedicated opportunity created for sandbox demo:\n{opp_msg}")
+            self._attach_note(form_id, f"SOS Approval & Notes - {po_num}", "\n".join(signoff_lines))
+
+        def _do_attach_extra_notes():
+            if "world wide" in (order.get("channel") or "").lower() or po_num == "4527709":
+                self._attach_note(form_id, "Note to RO: Carrier Information", "World Wide Technology 08 Gateway Commerce Center Drive Edwardsville, IL 62025 Carrier: Fed Ex Method: Ground Account #: 696099375 Ryan Hanrahan ryan.hanrahan@wwt.com 1-877-350-0190")
+                self._attach_note(form_id, "Ship To", "Cas Irvin 817-680-2820 cas.irvin@gmfinancial.com Confirmation attached and in the same thread Ship To WWT confirmation attached")
+
+        bf_name = form_id
+
+        def _do_query_bf_name():
+            nonlocal bf_name
             try:
-                self.attach_pdf(form_id, f"PO_{po_num}.pdf", pdf_data)
-                pdf_attached = True
-            except Exception as exc:
-                log.warning("Could not attach PDF to %s: %s", form_id, exc)
+                bf_rows = self.query(f"SELECT Id, Name FROM Booking_Form__c WHERE Id = '{form_id}' LIMIT 1")
+                if bf_rows and bf_rows[0].get("Name"):
+                    bf_name = bf_rows[0]["Name"]
+            except Exception:
+                pass
 
-        # 6. Attach Sign-off Note to RO
-        signoff_lines = [
-            f"Approved by: {approver_name}",
-            f"Sign-off timestamp: {time.strftime('%Y-%m-%d %H:%M:%S UTC', time.gmtime())}",
-            f"Engine outcome: {order.get('status', 'VALIDATED')}",
-            f"Measured processing time: {order.get('latency_ms', 0)} ms",
-        ]
-        if notes_to_ro:
-            signoff_lines.append(f"\nReviewer Notes to RO:\n{notes_to_ro}")
-        if acknowledged_flags:
-            signoff_lines.append(f"\nExceptions acknowledged by {approver_name}:")
-            for flag in acknowledged_flags:
-                signoff_lines.append(f"  • {flag}")
-        if substituted:
-            signoff_lines.append(f"\nNote: Dedicated opportunity created for sandbox demo:\n{opp_msg}")
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            tasks = [
+                executor.submit(_do_attach_pdf),
+                executor.submit(_do_attach_signoff_note),
+                executor.submit(_do_attach_extra_notes),
+                executor.submit(_do_query_bf_name),
+            ]
+            for t in tasks:
+                try:
+                    t.result()
+                except Exception as exc:
+                    log.warning("Post-booking concurrent task error: %s", exc)
 
-        self._attach_note(form_id, f"SOS Approval & Notes - {po_num}", "\n".join(signoff_lines))
-
-        # 7. Attach Ship To and Carrier Info notes if available
-        if "world wide" in (order.get("channel") or "").lower() or po_num == "4527709":
-            self._attach_note(form_id, "Note to RO: Carrier Information", "World Wide Technology 08 Gateway Commerce Center Drive Edwardsville, IL 62025 Carrier: Fed Ex Method: Ground Account #: 696099375 Ryan Hanrahan ryan.hanrahan@wwt.com 1-877-350-0190")
-            self._attach_note(form_id, "Ship To", "Cas Irvin 817-680-2820 cas.irvin@gmfinancial.com Confirmation attached and in the same thread Ship To WWT confirmation attached")
+        opp_name = self._opp_name_cache.get(opp_id)
+        if not opp_name:
+            opp_name = opp_id
+            try:
+                opp_rows = self.query(f"SELECT Id, Name FROM Opportunity WHERE Id = '{opp_id}' LIMIT 1")
+                if opp_rows and opp_rows[0].get("Name"):
+                    opp_name = opp_rows[0]["Name"]
+                    self._opp_name_cache[opp_id] = opp_name
+            except Exception:
+                pass
 
         return {
             "success": True,
             "booking_form_id": form_id,
+            "booking_form_name": bf_name,
             "url": f"{self.instance_url}/lightning/r/Booking_Form__c/{form_id}/view",
             "opportunity_id": opp_id,
+            "opportunity_name": opp_name,
+            "opportunity_url": f"{self.instance_url}/lightning/r/Opportunity/{opp_id}/view",
             "opportunity_substituted": substituted,
             "opportunity_message": opp_msg,
             "pdf_attached": pdf_attached,

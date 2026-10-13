@@ -427,7 +427,11 @@ class LivePOService:
                 order["booked_at"] = datetime.now(timezone.utc).isoformat()
                 order["booked_by"] = approver_name
                 order["sfdc_record_id"] = sf_res.get("booking_form_id")
+                order["sfdc_record_name"] = sf_res.get("booking_form_name")
                 order["sfdc_record_url"] = sf_res.get("url")
+                order["sfdc_opp_id"] = sf_res.get("opportunity_id")
+                order["sfdc_opp_name"] = sf_res.get("opportunity_name")
+                order["sfdc_opp_url"] = sf_res.get("opportunity_url")
                 order["sfdc_pdf_attached"] = sf_res.get("pdf_attached")
                 self.store.save_order(order)
 
@@ -436,7 +440,11 @@ class LivePOService:
                     "order_id": order_id,
                     "po": po_num,
                     "booking_form_id": sf_res.get("booking_form_id"),
+                    "booking_form_name": sf_res.get("booking_form_name"),
                     "url": sf_res.get("url"),
+                    "opportunity_id": sf_res.get("opportunity_id"),
+                    "opportunity_name": sf_res.get("opportunity_name"),
+                    "opportunity_url": sf_res.get("opportunity_url"),
                     "pdf_attached": sf_res.get("pdf_attached"),
                     "approver": approver_name,
                 })
@@ -444,7 +452,11 @@ class LivePOService:
                 return {
                     "success": True,
                     "booking_form_id": sf_res.get("booking_form_id"),
+                    "booking_form_name": sf_res.get("booking_form_name"),
                     "url": sf_res.get("url"),
+                    "opportunity_id": sf_res.get("opportunity_id"),
+                    "opportunity_name": sf_res.get("opportunity_name"),
+                    "opportunity_url": sf_res.get("opportunity_url"),
                     "pdf_attached": sf_res.get("pdf_attached"),
                     "dry_run": sf_res.get("dry_run", self.sf.dry_run),
                     "order": order,

@@ -204,6 +204,14 @@ class BaseExtractor:
                                         q = f"F5Q-{m_num.group(1).zfill(8)}"
                                         if q not in out:
                                             out.append(q)
+
+        # Multi-quote citations in PO notes: e.g. "Note:3069002, 3040265 and 3069003"
+        note_m = view.search(r"\bNote\s*[:\-]?\s*([0-9,\s(and)]+)")
+        if note_m:
+            for q in re.findall(r"\b\d{7,8}\b", note_m.group(1)):
+                full_q = f"F5Q-{q.zfill(8)}"
+                if full_q not in out:
+                    out.append(full_q)
         return out
 
     def po_number(self, view: PdfView) -> Optional[str]:
@@ -292,6 +300,20 @@ class BaseExtractor:
         # "Freight Acct#  Payment Term" is a header row, not an account.
         if val and re.search(r"\d", val) and not val.isalpha():
             return val
+
+        # Context search: within carrier details block or near carrier name
+        m = view.search(r"(?:carrier|shipping|freight|dhl|fedex|ups)[\s\S]{1,200}?(?:acct|account)\s*#?\s*[:\-]?\s*([A-Z0-9][A-Z0-9\-]{3,})")
+        if m:
+            c_val = m.group(1).strip()
+            if re.search(r"\d", c_val) and not c_val.isalpha():
+                return c_val
+
+        # Label search for Account# if a carrier is present in the document
+        m2 = view.search(r"\b(?:acct|account)\s*#\s*[:\-]?\s*([A-Z0-9][A-Z0-9\-]{3,})")
+        if m2 and (re.search(r"\b(?:dhl|fedex|ups|carrier|freight)\b", view.text, re.I)):
+            c_val = m2.group(1).strip()
+            if re.search(r"\d", c_val) and not c_val.isalpha() and not c_val.lower().startswith("payable"):
+                return c_val
         return None
 
     @staticmethod

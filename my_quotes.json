@@ -152,5 +152,95 @@
     ],
     "opportunity_id": "006Po00000f1Gr7IAE",
     "account_id": "00100000001GK9EAAW"
+  },
+  {
+    "quote_number": "F5Q-01304760",
+    "opportunity_id": "006Po00001OW7EXIA1",
+    "account_id": "001Po00000Silicon21",
+    "account_name": "Silicon21 for Electronics & Communications",
+    "reseller_name": "BARQ Systems",
+    "end_user_name": "Vodafone Egypt",
+    "payment_terms": "Net 45",
+    "currency": "USD",
+    "lines": [
+      {
+        "part_number": "F5-BIG-LTM-R2600",
+        "quantity": 2,
+        "unit_price": "15419.34",
+        "total_price": "30838.68"
+      },
+      {
+        "part_number": "F5-SVC-BIG-PRE-L1-3",
+        "quantity": 2,
+        "unit_price": "7361.92",
+        "total_price": "14723.84"
+      },
+      {
+        "part_number": "F5-SVC-BIG-RMA-2",
+        "quantity": 2,
+        "unit_price": "866.11",
+        "total_price": "1732.22"
+      },
+      {
+        "part_number": "F5-SBS-BIG-IPI-3-3YR",
+        "quantity": 2,
+        "unit_price": "6123.16",
+        "total_price": "12246.32"
+      },
+      {
+        "part_number": "F5-ADD-BIG-AWF-R2XXX",
+        "quantity": 2,
+        "unit_price": "14746.88",
+        "total_price": "29493.76"
+      },
+      {
+        "part_number": "F5-SVC-BIG-PRE-L1-3",
+        "quantity": 2,
+        "unit_price": "7040.85",
+        "total_price": "14081.70"
+      },
+      {
+        "part_number": "F5-UPG-SFP+-R",
+        "quantity": 8,
+        "unit_price": "1122.11",
+        "total_price": "8976.88"
+      },
+      {
+        "part_number": "F5-UPG-AC-R2XXX",
+        "quantity": 2,
+        "unit_price": "1291.05",
+        "total_price": "2582.10"
+      }
+    ]
+  },
+  {
+    "quote_number": "F5Q-03069002",
+    "opportunity_id": "006Po00001PQAsrIAH",
+    "account_id": "001Po00000WWT001AAA",
+    "account_name": "WORLD WIDE TECHNOLOGY LLC",
+    "reseller_name": "WORLD WIDE TECHNOLOGY LLC",
+    "end_user_name": "FEDERAL EXPRESS CORPORATION",
+    "payment_terms": "Net 60",
+    "currency": "USD",
+    "lines": [
+      {
+        "part_number": "F5-SVC-BIG-PRE-L1-3",
+        "quantity": 1,
+        "unit_price": "623478.07",
+        "total_price": "623478.07"
+      },
+      {
+        "part_number": "F5-SVC-BIG-PRE-L1-3",
+        "quantity": 1,
+        "unit_price": "374760.00",
+        "total_price": "374760.00"
+      },
+      {
+        "part_number": "F5-SVC-BIG-PRE-L1-3",
+        "quantity": 1,
+        "unit_price": "102779.09",
+        "total_price": "102779.09"
+      }
+    ]
   }
 ]
