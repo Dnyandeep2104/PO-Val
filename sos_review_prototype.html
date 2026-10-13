@@ -1030,7 +1030,7 @@ textarea.modern-input {
   var SAMPLE_ORDERS = [];
 
   /* State Storage */
-  var STORAGE_KEY = "f5_sos_live_v6_state";
+  var STORAGE_KEY = "f5_sos_live_v7_state";
   var usdFormatter = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" });
   function fmtMoney(v) { return typeof v === "number" ? usdFormatter.format(v) : (v || ""); }
   function escapeHtml(str) { return String(str || "").replace(/[&<>"']/g, function(m) { return { "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[m]; }); }
@@ -1636,10 +1636,26 @@ textarea.modern-input {
 
   // Reset Demo
   document.getElementById("resetDemoBtn").addEventListener("click", function() {
-    localStorage.removeItem(STORAGE_KEY);
-    appState = loadState();
-    updateApp();
-    notifyToast("🔄 Demo reset to initial pristine state.");
+    fetch("/api/reset")
+      .then(function() {
+        localStorage.removeItem(STORAGE_KEY);
+        appState = {
+          activeTab: "all",
+          searchQuery: "",
+          view: { type: "queue" },
+          orders: []
+        };
+        saveState();
+        updateApp();
+        notifyToast("🔄 Queue cleared. Starting from scratch!");
+      })
+      .catch(function() {
+        localStorage.removeItem(STORAGE_KEY);
+        appState.orders = [];
+        saveState();
+        updateApp();
+        notifyToast("🔄 Queue cleared.");
+      });
   });
 
   // Top Nav Checklist Button
