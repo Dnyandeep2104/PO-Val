@@ -1482,7 +1482,9 @@ textarea.modern-input {
       html += '<div class="form-input-group"><label>Salesforce Opportunity</label><input type="text" class="modern-input" value="' + escapeHtml(o.booking.opportunity) + '" readonly></div>';
       html += '<div class="form-input-group"><label>Booked Net Amount (USD)</label><input type="number" step="0.01" class="modern-input" value="' + escapeHtml(o.booking.amount) + '" id="editAmountInput"></div>';
       html += '<div class="form-input-group"><label>Sales Order Type</label><input type="text" class="modern-input" value="' + escapeHtml(o.booking.orderType) + '" id="editOrderTypeInput"></div>';
-      html += '<div class="form-input-group"><label>Reseller Partner</label><input type="text" class="modern-input" value="' + escapeHtml(o.booking.reseller) + '" id="editResellerInput"></div>';
+      html += '<div class="form-input-group"><label>Distributor (Bill-To)</label><input type="text" class="modern-input" value="' + escapeHtml(o.booking.distributor || o.distributor_name || "None") + '" id="editDistributorInput"></div>';
+      html += '<div class="form-input-group"><label>Reseller Partner</label><input type="text" class="modern-input" value="' + escapeHtml(o.booking.reseller || o.reseller_name || "Direct Order") + '" id="editResellerInput"></div>';
+      html += '<div class="form-input-group"><label>End User / Account</label><input type="text" class="modern-input" value="' + escapeHtml(o.booking.endUser || o.end_user_name || o.from) + '" id="editEndUserInput"></div>';
 
       (o.notes || []).forEach(function(n, idx) {
         html += '<div class="form-input-group"><label>' + escapeHtml(n.title) + '</label><textarea class="modern-input" id="editNoteArea_' + idx + '">' + escapeHtml(n.body) + '</textarea></div>';
@@ -1738,7 +1740,9 @@ textarea.modern-input {
     html += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;font-size:13px;">';
     html += '<div>PO Identifier: <strong>' + escapeHtml(o.po) + '</strong></div>';
     html += '<div>Net Booked Total: <strong>' + fmtMoney(o.booking.amount) + '</strong></div>';
-    html += '<div>Reseller Partner: <strong>' + escapeHtml(o.booking.reseller) + '</strong></div>';
+    html += '<div>Distributor: <strong>' + escapeHtml(o.booking.distributor || o.distributor_name || "None") + '</strong></div>';
+    html += '<div>Reseller Partner: <strong>' + escapeHtml(o.booking.reseller || o.reseller_name || "Direct Order") + '</strong></div>';
+    html += '<div>End User / Account: <strong>' + escapeHtml(o.booking.endUser || o.end_user_name || o.from) + '</strong></div>';
     html += '<div>Target Stage: <strong>In Process by SOS</strong></div>';
     html += '</div></div>';
 

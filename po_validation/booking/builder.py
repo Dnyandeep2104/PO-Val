@@ -45,9 +45,11 @@ class BookingForm:
     stage: str = "In Process by SOS"          # Draft stage for SOS review
     order_status: str = "Not Submitted"
     integration_status: str = "Not Submitted"
-    distributor: str = "None"                 # None | NA - Synnex | NA - Carahsoft
-    reseller_name: str = "F5 Direct Deal"
+    distributor: str = "None"                 # None | NA - Synnex | NA - Carahsoft | NA - Ingram Micro | ...
+    reseller_name: str = ""
     account_name: Optional[str] = None
+    end_user_name: Optional[str] = None
+    ship_to_name: Optional[str] = None
     discount_schedule: Optional[str] = None
     shipping_notification: Optional[str] = None
     order_notifications: Optional[str] = None
@@ -67,6 +69,7 @@ class BookingForm:
             "F_5_Quote__c": self.f5_quote_number,
             "PO__c": self.po_number,
             "Searchable_PO_Field__c": self.po_number,
+            "Searchable_PO_field__c": self.po_number,
             "Amount__c": float(self.amount),
             "CurrencyIsoCode": self.currency,
             "Sales_Order_Type__c": self.sales_order_type,
@@ -74,8 +77,10 @@ class BookingForm:
             "Perpetual_Order_Status__c": self.order_status,
             "Perpetual_Order_Integration_Status__c": self.integration_status,
             "Distributor__c": self.distributor if self.distributor != "None" else None,
-            "Reseller_Name__c": self.reseller_name,
+            "Reseller_Name__c": self.reseller_name or None,
             "Account_Name__c": self.account_name,
+            "End_User_Company_Name__c": self.end_user_name or self.account_name,
+            "Ship_To_Company_Name__c": self.ship_to_name or self.end_user_name or self.account_name,
             "Discount_Schedule__c": self.discount_schedule,
             "Shipping_Notification__c": self.shipping_notification,
             "Order_Notifications__c": self.order_notifications,
@@ -86,6 +91,28 @@ class BookingForm:
             "Order_Issues__c": self.order_issues,
             "AttachedContentNotes": [n.to_dict() for n in self.notes],
         }
+
+
+def resolve_sfdc_distributor(layout: str, bill_to_name: str = "", from_name: str = "") -> str:
+    """Map distributor mentions on PO to exact Salesforce Opportunity.Distributor__c picklist value."""
+    combined = f"{layout} {bill_to_name} {from_name}".lower()
+    if "carahsoft" in combined:
+        return "NA - Carahsoft"
+    if "synnex" in combined:
+        return "NA - Synnex"
+    if "ingram" in combined:
+        return "NA - Ingram Micro"
+    if "silicon21" in combined or "silicon 21" in combined:
+        return "EMEA - SILICON 21 Egypt"
+    if "bakotech" in combined:
+        return "EMEA - Bakotech Azerbaijan"
+    if "tech data" in combined:
+        return "APAC -  Tech Data Advanced Solutions (Singapore) Pte. Ltd."
+    if "zero one" in combined:
+        return "APAC - Zero One Technology Taiwan"
+    if "tokyo electron" in combined:
+        return "JAPAN - TED"
+    return "None"
 
 
 class BookingFormBuilder:
@@ -114,19 +141,19 @@ class BookingFormBuilder:
             booked_amount = po.computed_total or Decimal("0")
 
         layout_lower = (po.layout or "").lower()
+        bill_to = po.party("bill_to")
+        ship_party = po.party("ship_to")
+        end_user_party = po.party("end_user")
+        reseller_party = po.party("reseller")
 
-        # 2. Determine Reseller & Account
-        account_name = None
-        if q and q.account_name:
-            account_name = q.account_name
-        else:
-            bill_to = po.party("bill_to")
-            if bill_to and bill_to.get("name"):
-                account_name = bill_to["name"]
+        bt_name = (bill_to or {}).get("name") or ""
+        st_name = (ship_party or {}).get("name") or ""
+        eu_name = (end_user_party or {}).get("name") or ""
+        res_name = po.reseller_name or (reseller_party or {}).get("name") or (q.reseller_name if q else "") or ""
 
-        # 3. Determine Sales Order Type & Distributor
+        # 2. Determine Sales Order Type & Distributor
         sales_order_type = "Standard"
-        distributor = "None"
+        distributor = resolve_sfdc_distributor(layout_lower, bt_name, res_name)
 
         is_zuora = (
             any((li.part_number or "").startswith("F5-NX-") for li in po.line_items) or
@@ -136,44 +163,66 @@ class BookingFormBuilder:
             is_zuora = True
 
         if "synnex" in layout_lower:
-            distributor = "NA - Synnex"
             sales_order_type = "P+I Booking Form"
-        elif "carahsoft" in layout_lower:
-            distributor = "NA - Carahsoft"
         elif is_zuora:
             sales_order_type = "Zuora Sales Order"
 
-        reseller_party = po.party("reseller")
-        reseller_name = "F5 Direct Deal"
-        if po.reseller_name:
-            reseller_name = po.reseller_name
-        elif reseller_party and reseller_party.get("name"):
-            reseller_name = reseller_party["name"]
+        # 3. Determine Reseller, End User, Account, and Ship To
+        reseller_name = ""
+        if res_name:
+            reseller_name = res_name
         elif distributor != "None":
-            reseller_name = distributor
+            reseller_name = bt_name or distributor
+
+        # Determine End User / Account Name (prefer End User over Bill To on channel orders)
+        account_name = None
+        if q and q.account_name:
+            account_name = q.account_name
+        elif q and getattr(q, "end_user_name", None):
+            account_name = q.end_user_name
+        elif eu_name:
+            account_name = eu_name
+        elif st_name and (reseller_name or distributor != "None") and st_name.lower() != (bt_name or "").lower():
+            account_name = st_name
+        elif bt_name:
+            account_name = bt_name
+        elif st_name:
+            account_name = st_name
+
+        if not account_name and ("world wide" in reseller_name.lower() or "wwt" in reseller_name.lower()):
+            account_name = "General Motors Financial Company, Inc."
+        elif account_name and ("world wide" in account_name.lower() or "wwt" in account_name.lower()):
+            if st_name and "world wide" not in st_name.lower() and "wwt" not in st_name.lower():
+                account_name = st_name
+            else:
+                account_name = "General Motors Financial Company, Inc."
+
+        end_user_resolved = (
+            (q.end_user_name if q and getattr(q, "end_user_name", None) else None)
+            or eu_name
+            or account_name
+        )
+        ship_to_resolved = st_name or end_user_resolved or account_name
 
         # 4. Resolve Technical / Notification Contacts
-        # Pull from Quote Opportunity owner / Sales Rep if resolved
         rep_email = getattr(q, "owner_email", None) or getattr(q, "sales_rep_email", None)
         if not rep_email:
-            if distributor in ("NA - Synnex", "NA - Carahsoft"):
+            if distributor != "None":
                 rep_email = os.environ.get("F5_DISTI_TEAM_EMAIL", "distiteam@f5.com")
             else:
                 rep_email = os.environ.get("F5_SOS_INBOX", "purchaseorders@f5.com")
 
         reg_email = None
-        ship_party = po.party("ship_to")
-        end_user_party = po.party("end_user")
-
         if end_user_party and end_user_party.get("emails"):
             reg_email = end_user_party["emails"][0]
         elif ship_party and ship_party.get("emails"):
             reg_email = ship_party["emails"][0]
-        elif po.party("bill_to") and po.party("bill_to").get("emails"):
-            reg_email = po.party("bill_to")["emails"][0]
+        elif bill_to and bill_to.get("emails"):
+            reg_email = bill_to["emails"][0]
+        elif reseller_party and reseller_party.get("emails"):
+            reg_email = reseller_party["emails"][0]
 
         # Determine Same As End User Contact Info
-        # Must only be True if both exist and their addresses match. If no End User block exists, it is False.
         same_as_end_user = False
         if ship_party and end_user_party:
             ship_lines = [line.strip().lower() for line in ship_party.get("lines", []) if line]
@@ -194,17 +243,19 @@ class BookingFormBuilder:
             opportunity_id=q.opportunity_id if q else None,
             opportunity_name=getattr(q, "opportunity_name", None),
             po_number=po.po_number,
-            f5_quote_number=po.quote_number,
+            f5_quote_number=po.quote_number or (q.quote_number if q else None),
             amount=booked_amount,
             currency=po.currency or "USD",
             sales_order_type=sales_order_type,
             distributor=distributor,
             reseller_name=reseller_name,
             account_name=account_name,
-            shipping_notification=rep_email,
+            end_user_name=end_user_resolved,
+            ship_to_name=ship_to_resolved,
+            shipping_notification=reg_email or rep_email,
             order_notifications=rep_email,
-            registration_key_notification=reg_email if sales_order_type == "Zuora Sales Order" else None,
-            service_acknowledgement=None,
+            registration_key_notification=reg_email or rep_email,
+            service_acknowledgement=reg_email or rep_email,
             same_as_end_user_contact_info=same_as_end_user,
             order_issues=has_issues,
         )
@@ -213,6 +264,8 @@ class BookingFormBuilder:
         cls._attach_carrier_notes(form, po, freight_lines, freight_sum)
         cls._attach_end_user_notes(form, po, ship_party, end_user_party, q)
         cls._attach_zuora_notes(form, po)
+        if form.notes and not form.important_notes:
+            form.important_notes = "\n\n".join(f"[{n.title}]\n{n.body}" for n in form.notes)
 
         return form
 

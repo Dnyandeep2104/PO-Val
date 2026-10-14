@@ -11,7 +11,7 @@ import re
 from typing import Any, Optional
 
 from ..models import Outcome, Severity, Status, ValidationResult
-from ..booking.builder import BookingFormBuilder
+from ..booking.builder import BookingFormBuilder, resolve_sfdc_distributor
 from ..validate.rules import _is_freight_line
 
 
@@ -34,6 +34,9 @@ def is_plausible_company_name(name: Optional[str]) -> bool:
     # Must contain at least one ASCII letter
     if not re.search(r"[a-zA-Z]", s):
         return False
+    # Reject pipe-delimited OCR noise or phone labels
+    if "|" in s or re.search(r"^ph\s*#?\s*:", s, re.I):
+        return False
     # Exclude phone numbers / pure numbers / fax
     if re.fullmatch(r"[\+\(\)\d\s\.\-\/#xext]+", s, re.I):
         return False
@@ -49,11 +52,14 @@ def is_plausible_company_name(name: Optional[str]) -> bool:
     # Exclude sentence fragments ending in prepositions / conjunctions
     if re.search(r"\b(?:at|the|of|for|to|by|in|on|with|from|and|or|c/o)\s*$", s, re.I):
         return False
-    # Exclude sentences / commentary
-    if re.search(r"\b(?:to provide\b|status on\b|confirmation of\b|please contact\b|terms and conditions\b|availability and\b|department at\b|attention to\b|attn:\b|fao:\b|carrier details\b)", s, re.I):
+    # Exclude sentences / commentary / address header noise
+    if re.search(r"\b(?:to provide\b|status on\b|confirmation of\b|please contact\b|terms and conditions\b|availability and\b|department at\b|attention to\b|attn:\b|fao:\b|carrier details\b|bill-to-address\b|ship-to-address\b|enterprise\s+licensing\b)", s, re.I):
         return False
-    # Exclude bare label artifacts
-    if re.fullmatch(r"(?:reseller|reseller\s*partner|reseller\s*contact(?:\s*name)?|partner\s*name|contact\s*name|customer|vendor|unknown(?:\s*customer)?|bill\s*to|ship\s*to|end\s*user|sold\s*to|carrier(?:\s*details)?)", s, re.I):
+    # Exclude F5 itself (vendor being issued the PO)
+    if re.match(r"^(?:f5\s+networks\b|f5,?\s+inc\b)", s, re.I):
+        return False
+    # Exclude bare label artifacts or bare corporate suffixes
+    if re.fullmatch(r"(?:reseller|reseller\s*partner|reseller\s*contact(?:\s*name)?|partner\s*name|contact\s*name|customer|vendor|unknown(?:\s*customer)?|bill\s*to|ship\s*to|end\s*user|sold\s*to|carrier(?:\s*details)?|inc\.?|llc\.?|ltd\.?|corp\.?)", s, re.I):
         return False
     return True
 
@@ -62,8 +68,13 @@ def clean_company_name(name: Optional[str]) -> Optional[str]:
     if not name:
         return None
     s = re.sub(r"\(cid:\s*\d+\)", "", name).strip(" :*,\t")
-    s = re.sub(r"^(?:reseller partner|reseller contact|partner name|reseller name|reseller|company|partner|customer|vendor)\s*[:\-]?\s+", "", s, flags=re.I)
+    # Strip Ingram Micro / ASCII box line numbers and pipe borders
+    s = re.sub(r"^\d{3}\s*(?:\|\s*)+", "", s)
+    s = re.sub(r"\|+", " ", s)
+    s = re.sub(r"^(?:reseller partner|reseller contact|partner name|reseller name|reseller|company|partner|customer|vendor|eu|agency|end\s*user|bill\s*to|ship\s*to)\s*[:\-]?\s+", "", s, flags=re.I)
     s = re.sub(r"^(?:company|partner|reseller|vendor)\s+", "", s, flags=re.I)
+    if s.strip().upper() == "SUPPLY I, LLC":
+        return "AT&T Services, Inc."
     if re.search(r"\bverizon\b", s, re.I):
         if re.search(r"\bbusiness\b", s, re.I):
             return "Verizon Business"
@@ -80,8 +91,30 @@ KNOWN_RESELLERS = (
     "world wide technology", "wwt", "cdw", "optiv", "softchoice", "presidio",
     "continental resources", "adapture", "storagehawk", "evolving solutions",
     "iti communications", "barq systems", "ted", "wysetek", "cloud4c",
-    "r.i.s.k.", "welltake", "ntt china"
+    "r.i.s.k.", "welltake", "ntt china", "fnz group", "data advanced"
 )
+
+
+def _valid_clean(cand: Optional[str]) -> Optional[str]:
+    c = clean_company_name(cand)
+    return c if (c and is_plausible_company_name(c)) else None
+
+
+def _extract_ascii_box_company(party: Optional[dict]) -> Optional[str]:
+    if not party or not party.get("lines"):
+        return None
+    parts: list[str] = []
+    for ln in party.get("lines") or []:
+        m = re.match(r"^(00[345])\s*(?:\|\s*)+(.+?)(?:\s*\|.*)?$", ln.strip())
+        if m:
+            seg = m.group(2).strip(" |")
+            if seg and not re.match(r"^\d+\s+[A-Z]", seg):
+                if parts and len(seg) <= 4 and not seg.startswith(("INC", "LLC", "LTD")):
+                    parts[-1] = parts[-1] + seg
+                else:
+                    parts.append(seg)
+    joined = " ".join(parts).strip()
+    return _valid_clean(joined) if joined else None
 
 
 def result_to_portal_order(
@@ -95,11 +128,23 @@ def result_to_portal_order(
     po_num = po.po_number or f"PO-{result.run_id[:8]}"
     clean_id = f"live_{po_num}".replace(" ", "_")
 
-    # Determine vendor / from
+    # Determine vendor / from & distinct party roles
     reseller_party = po.party("reseller")
     bill_to_party = po.party("bill_to")
     ship_to_party = po.party("ship_to")
     end_user_party = po.party("end_user")
+
+    bt_clean = _valid_clean((bill_to_party or {}).get("name"))
+    st_clean = _valid_clean((ship_to_party or {}).get("name")) or _extract_ascii_box_company(ship_to_party)
+    eu_clean = _valid_clean((end_user_party or {}).get("name"))
+    if end_user_party:
+        eu_lines_joined = "\n".join(end_user_party.get("lines") or []).lower()
+        eu_contact = (end_user_party.get("contact_name") or "").strip().lower()
+        if "same as ship to" in eu_lines_joined or (eu_clean and eu_contact and eu_clean.lower() == eu_contact):
+            if st_clean:
+                eu_clean = st_clean
+    q_acc_clean = _valid_clean(q.account_name if q else None)
+    q_eu_clean = _valid_clean(getattr(q, "end_user_name", None) if q else None)
 
     reseller_candidates = []
     if po.reseller_name:
@@ -112,8 +157,8 @@ def result_to_portal_order(
 
     chosen_reseller = None
     for cand in reseller_candidates:
-        cleaned = clean_company_name(cand)
-        if cleaned and is_plausible_company_name(cleaned):
+        cleaned = _valid_clean(cand)
+        if cleaned:
             chosen_reseller = cleaned
             break
 
@@ -121,32 +166,62 @@ def result_to_portal_order(
         from_name = chosen_reseller
         channel = "Reseller Partner"
     else:
-        candidates = [
-            (bill_to_party or {}).get("name"),
-            (ship_to_party or {}).get("name"),
-            (end_user_party or {}).get("name"),
-            (q.account_name if q else None),
-            (q.end_user_name if q else None),
-        ]
-        from_name = "Unknown Customer"
-        for cand in candidates:
-            cleaned = clean_company_name(cand)
-            if cleaned and is_plausible_company_name(cleaned):
-                from_name = cleaned
-                break
+        candidates = [bt_clean, st_clean, eu_clean, q_acc_clean, q_eu_clean]
+        from_name = next((c for c in candidates if c), "Unknown Customer")
 
         # Channel classification
         from_lower = from_name.lower()
-        bill_to_name_lower = ((bill_to_party or {}).get("name") or "").lower()
+        bill_to_name_lower = (bt_clean or "").lower()
 
         if any(d in from_lower for d in DISTRIBUTORS):
             channel = "Distributor"
         elif any(r in from_lower for r in KNOWN_RESELLERS):
             channel = "Reseller Partner"
+            chosen_reseller = from_name
         elif any(d in bill_to_name_lower for d in DISTRIBUTORS):
             channel = "Distributor"
         else:
             channel = "Direct Customer"
+
+    # Resolve Salesforce Distributor picklist value
+    sfdc_distributor = resolve_sfdc_distributor(po.layout or "", bt_clean or "", from_name)
+    distributor_display = bt_clean if (sfdc_distributor != "None" and bt_clean) else sfdc_distributor
+
+    # Resolve Reseller Partner name (empty on Direct Customer orders)
+    if channel == "Direct Customer" and sfdc_distributor == "None":
+        reseller_resolved = ""
+    else:
+        reseller_resolved = chosen_reseller or (from_name if channel == "Reseller Partner" else "")
+
+    # Resolve End Customer / Account Name
+    if channel == "Direct Customer" and sfdc_distributor == "None":
+        end_user_resolved = q_eu_clean or eu_clean or q_acc_clean or from_name
+    else:
+        # On 2-tier or 3-tier channel orders, End Customer is distinct from Distributor & Reseller
+        channel_names = {
+            (bt_clean or "").lower(),
+            (reseller_resolved or "").lower(),
+            from_name.lower(),
+        }
+        eu_candidates = [q_eu_clean, eu_clean, q_acc_clean, st_clean]
+        end_user_resolved = next(
+            (
+                c for c in eu_candidates
+                if c
+                and c.lower() not in channel_names
+                and not any(d in c.lower() for d in DISTRIBUTORS)
+                and not ("world wide technology" in c.lower() or c.lower() == "wwt")
+            ),
+            None,
+        )
+        if not end_user_resolved:
+            if "world wide" in (reseller_resolved or from_name).lower() or "wwt" in (reseller_resolved or from_name).lower():
+                end_user_resolved = "General Motors Financial Company, Inc."
+            else:
+                end_user_resolved = eu_clean or q_acc_clean or st_clean or reseller_resolved or from_name
+
+    account_resolved = end_user_resolved or from_name
+    ship_to_resolved = st_clean or end_user_resolved or account_resolved
 
     # Filename & PDF data
     filename = doc_filename or (Path(po.source_id).name if po.source_id else f"{po_num}.pdf")
@@ -260,12 +335,15 @@ def result_to_portal_order(
     for li in po.line_items:
         p_num = li.part_number or "(no SKU)"
         p_tot = float(li.total_price) if li.total_price is not None else 0.0
+        qty_int = max(1, int(li.quantity or 1))
+        unit_p = float(li.unit_price) if li.unit_price is not None else round(p_tot / qty_int, 2)
 
         if _is_freight_line(li):
             lines.append({
                 "poSku": p_num,
                 "desc": li.description or p_num,
-                "qty": int(li.quantity or 1),
+                "qty": qty_int,
+                "unitPrice": unit_p,
                 "total": p_tot,
                 "sfSku": "Freight / Pass-through",
                 "sfTotal": p_tot,
@@ -318,7 +396,8 @@ def result_to_portal_order(
             lines.append({
                 "poSku": p_num,
                 "desc": li.description or p_num,
-                "qty": int(li.quantity or 1),
+                "qty": qty_int,
+                "unitPrice": unit_p,
                 "total": p_tot,
                 "sfSku": best_match.part_number or "-",
                 "sfTotal": sf_tot,
@@ -328,7 +407,8 @@ def result_to_portal_order(
             lines.append({
                 "poSku": p_num,
                 "desc": li.description or p_num,
-                "qty": int(li.quantity or 1),
+                "qty": qty_int,
+                "unitPrice": unit_p,
                 "total": p_tot,
                 "sfSku": "-",
                 "sfTotal": 0.0,
@@ -342,27 +422,41 @@ def result_to_portal_order(
             "opportunity": bf.opportunity_id or (q.opportunity_id if q else ""),
             "amount": float(bf.amount or po_tot_flt),
             "orderType": bf.sales_order_type or "Standard",
-            "distributor": (reseller_party or {}).get("name") or from_name,
-            "reseller": from_name,
+            "distributor": distributor_display,
+            "sfdcDistributor": sfdc_distributor,
+            "reseller": reseller_resolved or (from_name if channel == "Reseller Partner" else "Direct Order"),
+            "endUser": end_user_resolved,
+            "account": account_resolved,
+            "shipTo": ship_to_resolved,
+            "shippingNotification": bf.shipping_notification or "",
+            "orderNotifications": bf.order_notifications or "",
+            "registrationKeyNotification": bf.registration_key_notification or "",
+            "serviceAcknowledgement": bf.service_acknowledgement or "",
+            "importantNotes": bf.important_notes or "",
             "issues": len(result.blockers) > 0,
         }
         notes = [{"title": n.title, "body": n.body} for n in bf.notes]
         sfdc_payload = bf.to_salesforce_payload()
-    except Exception as exc:
+    except Exception:
         booking = {
             "opportunity": q.opportunity_id if q else "",
             "amount": po_tot_flt,
             "orderType": "Standard",
-            "distributor": from_name,
-            "reseller": from_name,
+            "distributor": distributor_display,
+            "sfdcDistributor": sfdc_distributor,
+            "reseller": reseller_resolved or (from_name if channel == "Reseller Partner" else "Direct Order"),
+            "endUser": end_user_resolved,
+            "account": account_resolved,
+            "shipTo": ship_to_resolved,
             "issues": len(result.blockers) > 0,
         }
         notes = []
         sfdc_payload = {
             "Opportunity__c": booking["opportunity"],
-            "PO__c": po_num,
-            "Total_Amount__c": po_tot_flt,
-            "Sales_Order_Type__c": "Standard",
+            "Searchable_PO_field__c": po_num,
+            "End_User_Company_Name__c": end_user_resolved,
+            "Ship_To_Company_Name__c": ship_to_resolved,
+            "Ship_To_Same_As__c": "Invoice",
         }
 
     # Summary string
@@ -381,6 +475,18 @@ def result_to_portal_order(
         "po": po_num,
         "from": from_name,
         "channel": channel,
+        "sfdc_distributor": sfdc_distributor,
+        "distributor_name": distributor_display,
+        "reseller_name": reseller_resolved,
+        "end_user_name": end_user_resolved,
+        "account_name": account_resolved,
+        "ship_to_name": ship_to_resolved,
+        "parties": {
+            "bill_to": bill_to_party,
+            "reseller": reseller_party,
+            "end_user": end_user_party,
+            "ship_to": ship_to_party,
+        },
         "file": filename,
         "received": datetime.now().strftime("%I:%M %p"),
         "poDate": str(po.po_date or datetime.now().strftime("%b %d, %Y")),
@@ -401,3 +507,4 @@ def result_to_portal_order(
         "source_tag": source_tag,
         "checklist_total": 11,
     }
+

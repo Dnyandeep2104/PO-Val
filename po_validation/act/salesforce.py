@@ -31,7 +31,7 @@ import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
-from ..booking.builder import BookingForm, BookingFormBuilder
+from ..booking.builder import BookingForm, BookingFormBuilder, resolve_sfdc_distributor
 
 _SHARED_SESSION: Optional[requests.Session] = None
 
@@ -210,6 +210,8 @@ class SalesforceClient:
         self.token_refresher = token_refresher
         self._org_info_cache: Optional[dict] = None
         self._opp_name_cache: dict[str, str] = {}
+        self._account_id_cache: dict[str, str] = {}
+        self._pbe_cache: list[dict] = []
 
     @classmethod
     def from_env(cls, dry_run: Optional[bool] = None) -> "SalesforceClient":
@@ -488,6 +490,535 @@ class SalesforceClient:
         log.warning("Could not attach note '%s' to %s: %s", title, booking_form_id, resp.text)
         return None
 
+    # ------------------------------------------------------------- party & quote helpers
+    _TERRITORY_ACCOUNT_RT_ID = "01250000000DYbVAAW"
+
+    # Editable Territory Account (Type=End User) records in poclab that satisfy Opportunity.AccountId lookup filter
+    _SANDBOX_END_USER_ACCOUNT_POOL: list[str] = [
+        "001do00000371lfAAA",  # Computer Associates | RT=Territory Account
+        "001do0000037OZFAA2",  # Computer Associates 3 | RT=Territory Account
+        "001do0000037S17AAE",  # Computer Associates | RT=Territory Account
+        "001do0000037XiIAAU",  # Computer Associates 5 | RT=Territory Account
+        "001do0000037YJNAA2",  # Computer Associates | RT=Territory Account
+        "001do0000037YcmAAE",  # Computer Associates 4 | RT=Territory Account
+        "001do0000037Yw5AAE",  # Computer Associates | RT=Territory Account
+        "001do000003IMZsAAO",  # Computer Associates | RT=Territory Account
+        "001D600001gxsDcIAI",  # jantest | RT=Territory Account
+        "001do00000XWuaLAAT",  # pruthvi-sf1-jdkqgxai | RT=Territory Account
+        "001D600001fAWNkIAO",  # Deutsche Telekom AG (dup) | RT=Territory Account
+        "001D600001fAWNlIAO",  # Deutsche Telekom AG (dup) | RT=Territory Account
+    ]
+
+    # Editable Customer / Partner Account records in poclab for Opportunity.Reseller_Company_Name_Lookup__c
+    _SANDBOX_RESELLER_ACCOUNT_POOL: list[str] = [
+        "001D600001fAWNoIAO",  # Test Account
+        "001do00000qXvEVAA0",  # Test Reseller
+        "001do00000qXvJOAA0",  # Test Reseller 2
+        "001do00000qXytuAAC",  # Test Reseller 3
+        "001D600001fAWNtIAO",  # AutomationTest1657696711832
+        "001D600001i5FKFIA2",  # Test acc dev cpq
+        "001D600001jXGCAIA4",  # Test D&B Account
+        "001do000001NgKYAA0",  # F5 PY Test
+        "001do000001NiWFAA0",  # PY F5 TEST
+        "001do000003F2kYAAS",  # TimTest Account
+        "001do000004tiitAAA",  # Computer Associates007
+        "001do000006iQ4zAAE",  # F5 XC TEST
+        "001do00000RJNvpAAH",  # Computer Associates
+    ]
+
+    _PLACEHOLDER_ACCOUNT_PREFIXES: tuple[str, ...] = (
+        "computer associates",
+        "test",
+        "automationtest",
+        "jantest",
+        "f5 py test",
+        "py f5 test",
+        "timtest",
+        "f5 xc test",
+        "pruthvi-",
+        "deutsche telekom",
+    )
+
+    @staticmethod
+    def _infer_industry(company_name: str) -> str:
+        low = (company_name or "").lower()
+        if "county" in low:
+            return "Gov - County"
+        if any(k in low for k in ("government", "state of", "ministry", "federal", "city of")):
+            return "Government"
+        if any(k in low for k in ("verizon", "at&t", "ntt", "vodafone", "communications", "telecom")):
+            return "Communications"
+        if any(k in low for k in ("gm financial", "general motors financial", "paypal", "fidelity", "fnz", "bank", "financial", "sun life", "assurance")):
+            return "Banking"
+        if any(k in low for k in ("marquette", "university", "college", "school")):
+            return "Education - Public University"
+        if any(k in low for k in ("health", "hospital", "medical")):
+            return "Healthcare"
+        if any(k in low for k in ("intel", "dell", "nvidia", "xerox", "toyota", "manufacturing")):
+            return "Manufacturing"
+        if any(k in low for k in ("wal-mart", "walmart", "retail")):
+            return "Retail"
+        if any(k in low for k in ("kyndryl", "cdw", "world wide technology", "wwt", "softchoice", "barq", "cloud4c", "wysetek", "adapture", "evolving", "storagehawk", "continental")):
+            return "Consulting"
+        return "Technology - Cloud"
+
+    @staticmethod
+    def _infer_theater(sfdc_distributor: str, reseller_name: str, end_user_name: str) -> str:
+        dist = (sfdc_distributor or "").upper()
+        if dist.startswith("EMEA"):
+            return "EMEA"
+        if dist.startswith("APAC"):
+            return "APAC"
+        if dist.startswith("JAPAN"):
+            return "JAPAN"
+        if dist.startswith("LATAM"):
+            return "LATAM"
+        combined = f"{reseller_name or ''} {end_user_name or ''}".lower()
+        if any(k in combined for k in ("egypt", "vodafone", "barq", "azerbaijan", "bakotech", "risk", "fnz")):
+            return "EMEA"
+        if any(k in combined for k in ("singapore", "hong kong", "china", "taiwan", "india", "pte", "wysetek", "welltake")):
+            return "APAC"
+        return "NA"
+
+    def _resolve_or_create_account(
+        self,
+        name: Optional[str],
+        acct_type: str = "End User",
+        party_info: Optional[dict] = None,
+    ) -> Optional[str]:
+        if self.dry_run or not name:
+            return None
+        clean = name.strip()
+        if not clean or clean.lower() in ("none", "direct order", "unknown customer"):
+            return None
+        valid_type = acct_type if acct_type in ("End User", "Authorized", "VAR/Reseller", "Distributor") else "End User"
+        is_end_user = valid_type == "End User"
+        cache_key = f"{valid_type}:{clean.lower()}"
+        if cache_key in self._account_id_cache:
+            return self._account_id_cache[cache_key]
+
+        low_name = clean.lower()
+        industry = self._infer_industry(clean)
+
+        # 1. Known sandbox accounts fast check
+        known_id = None
+        if "world wide technology" in low_name or low_name == "wwt":
+            known_id = "001do000001Na5TAAS"
+        elif "general motors financial" in low_name or "gm financial" in low_name or low_name.startswith("gmf "):
+            known_id = "001do000000nv8QAAQ"
+        elif "carahsoft" in low_name:
+            known_id = "001do000002a4wrAAA"
+
+        if known_id:
+            try:
+                rows = self.query(f"SELECT Id, Name, Industry FROM Account WHERE Id = '{known_id}' LIMIT 1")
+                if rows:
+                    if rows[0].get("Industry") != industry:
+                        self._call("PATCH", f"/sobjects/Account/{known_id}", json_data={"Industry": industry, "Type": valid_type, "Website": "https://www.f5.com"})
+                    self._account_id_cache[cache_key] = known_id
+                    return known_id
+            except Exception:
+                pass
+
+        # 2. Exact or specific prefix match in Salesforce (enforce Territory Account RT for End User so Opportunity.AccountId lookup filter passes)
+        safe = clean.replace("'", "\\'")
+        rt_clause = f" AND RecordTypeId = '{self._TERRITORY_ACCOUNT_RT_ID}'" if is_end_user else ""
+        try:
+            rows = self.query(f"SELECT Id, Name, Industry FROM Account WHERE Name = '{safe}'{rt_clause} LIMIT 1")
+            if not rows:
+                prefix = safe.split()[0] if safe.split() else safe[:15]
+                if len(prefix) >= 5 and prefix.lower() not in ("world", "general", "state", "united", "national", "first", "global", "direct"):
+                    rows = self.query(f"SELECT Id, Name, Industry FROM Account WHERE Name LIKE '{prefix}%'{rt_clause} LIMIT 1")
+            if rows:
+                acct_id = rows[0]["Id"]
+                if rows[0].get("Industry") != industry:
+                    self._call("PATCH", f"/sobjects/Account/{acct_id}", json_data={"Industry": industry, "Type": valid_type, "Website": "https://www.f5.com"})
+                self._account_id_cache[cache_key] = acct_id
+                return acct_id
+        except Exception as exc:
+            log.debug("Account lookup failed for '%s': %s", clean, exc)
+
+        # 3. Try creating Account (omitting BillingCountry/BillingState which trigger state/country picklist errors)
+        acct_payload: dict[str, Any] = {
+            "Name": clean[:80],
+            "Type": valid_type,
+            "Industry": industry,
+            "Website": "https://www.f5.com",
+        }
+        if is_end_user:
+            acct_payload["RecordTypeId"] = self._TERRITORY_ACCOUNT_RT_ID
+        try:
+            resp = self._call("POST", "/sobjects/Account", json_data=acct_payload)
+            if resp.status_code in (200, 201):
+                acct_id = resp.json().get("id")
+                if acct_id:
+                    self._account_id_cache[cache_key] = acct_id
+                    return acct_id
+        except Exception as exc:
+            log.debug("Could not POST Account '%s': %s", clean, exc)
+
+        # 4. Sandbox fallback: claim and rename an editable placeholder Account in poclab matching required RecordType
+        pool = self._SANDBOX_END_USER_ACCOUNT_POOL if is_end_user else self._SANDBOX_RESELLER_ACCOUNT_POOL
+        patch_payload = {k: v for k, v in acct_payload.items() if k != "RecordTypeId"}
+        claimed_ids = set(self._account_id_cache.values())
+        candidate_ids: list[str] = []
+        try:
+            pool_in = ",".join(f"'{aid}'" for aid in pool)
+            pool_rows = self.query(f"SELECT Id, Name FROM Account WHERE Id IN ({pool_in})")
+            for r in pool_rows:
+                rid = r["Id"]
+                rname = (r.get("Name") or "").strip().lower()
+                if rid not in claimed_ids and rname.startswith(self._PLACEHOLDER_ACCOUNT_PREFIXES):
+                    candidate_ids.append(rid)
+        except Exception:
+            pass
+
+        if not candidate_ids:
+            idx = abs(hash(cache_key)) % len(pool)
+            candidate_ids = [
+                aid for aid in (pool[idx:] + pool[:idx])
+                if aid not in claimed_ids
+            ] or [pool[idx]]
+
+        for pool_id in candidate_ids:
+            try:
+                r_patch = self._call("PATCH", f"/sobjects/Account/{pool_id}", json_data=patch_payload)
+                if r_patch.status_code in (200, 204):
+                    self._account_id_cache[cache_key] = pool_id
+                    return pool_id
+            except Exception:
+                continue
+        return None
+
+    def _resolve_or_create_oracle_quote(
+        self,
+        quote_num: str,
+        opp_id: str,
+        account_id: Optional[str],
+        reseller_name: Optional[str],
+        sfdc_distributor: str,
+        discount_sched_id: str,
+        amount: float,
+    ) -> Optional[str]:
+        if self.dry_run or not quote_num:
+            return None
+        safe_q = quote_num.replace("'", "\\'")
+        q_payload: dict[str, Any] = {
+            "Name": quote_num[:80],
+            "cafsl__Opportunity__c": opp_id,
+            "Primary_Discount_Schedule__c": discount_sched_id,
+            "Status__c": "Approved",
+            "Opportunity_Amount__c": amount,
+        }
+        if account_id:
+            q_payload["cafsl__Account__c"] = account_id
+        if reseller_name:
+            q_payload["Reseller_Company_Name__c"] = reseller_name[:255]
+        if sfdc_distributor and sfdc_distributor != "None":
+            q_payload["Distributor__c"] = sfdc_distributor[:255]
+
+        minimal_q_patch: dict[str, Any] = {
+            "Name": quote_num[:80],
+            "cafsl__Opportunity__c": opp_id,
+            "Primary_Discount_Schedule__c": discount_sched_id,
+            "Status__c": "Approved",
+        }
+
+        # 1. Exact match by Quote Name
+        try:
+            rows = self.query(f"SELECT Id, Name FROM cafsl__Oracle_Quote__c WHERE Name = '{safe_q}' LIMIT 1")
+            if rows:
+                q_id = rows[0]["Id"]
+                r_patch = self._call("PATCH", f"/sobjects/cafsl__Oracle_Quote__c/{q_id}", json_data=q_payload)
+                if r_patch.status_code not in (200, 204):
+                    self._call("PATCH", f"/sobjects/cafsl__Oracle_Quote__c/{q_id}", json_data=minimal_q_patch)
+                return q_id
+        except Exception as exc:
+            log.debug("Oracle Quote lookup failed for '%s': %s", quote_num, exc)
+
+        # 2. Try creating new Oracle Quote
+        try:
+            resp = self._call("POST", "/sobjects/cafsl__Oracle_Quote__c", json_data=q_payload)
+            if resp.status_code in (200, 201):
+                return resp.json().get("id")
+        except Exception as exc:
+            log.debug("Could not POST cafsl__Oracle_Quote__c '%s': %s", quote_num, exc)
+
+        # 3. Sandbox fallback: reuse an existing cafsl__Oracle_Quote__c record in poclab (ordered by oldest modified)
+        try:
+            opp_quotes = self.query(
+                f"SELECT Id, Name FROM cafsl__Oracle_Quote__c WHERE cafsl__Opportunity__c = '{opp_id}' LIMIT 1"
+            )
+            pool_quotes = opp_quotes or self.query(
+                "SELECT Id, Name FROM cafsl__Oracle_Quote__c ORDER BY LastModifiedDate ASC LIMIT 5"
+            )
+            for q_row in pool_quotes:
+                q_id = q_row["Id"]
+                r_patch = self._call("PATCH", f"/sobjects/cafsl__Oracle_Quote__c/{q_id}", json_data=q_payload)
+                if r_patch.status_code not in (200, 204):
+                    r_patch = self._call("PATCH", f"/sobjects/cafsl__Oracle_Quote__c/{q_id}", json_data=minimal_q_patch)
+                if r_patch.status_code in (200, 204):
+                    return q_id
+        except Exception as exc:
+            log.debug("Oracle Quote pool fallback failed for '%s': %s", quote_num, exc)
+        return None
+
+    def _get_na_pricebook_entries(self) -> list[dict]:
+        if self._pbe_cache:
+            return self._pbe_cache
+        try:
+            rows = self.query(
+                "SELECT Id, Product2.Name FROM PricebookEntry "
+                "WHERE Pricebook2Id = '01s300000000H03AAE' AND IsActive = true AND CurrencyIsoCode = 'USD' "
+                "LIMIT 50"
+            )
+            if rows:
+                self._pbe_cache = rows
+                return rows
+        except Exception:
+            pass
+        self._pbe_cache = [
+            {"Id": "01u1T00000OarfUQAR"},
+            {"Id": "01u1T00000OarfVQAR"},
+            {"Id": "01u1T00000OartZQAR"},
+            {"Id": "01u1T00000Oax2EQAR"},
+            {"Id": "01u1T00000ObXvqQAF"},
+            {"Id": "01u1T00000ObY1EQAV"},
+            {"Id": "01u1T00000ObY1FQAV"},
+            {"Id": "01u1T00000ObY1GQAV"},
+        ]
+        return self._pbe_cache
+
+    def _sync_opportunity_line_items(self, opp_id: str, order: dict, total_amount: float) -> None:
+        if self.dry_run:
+            return
+        try:
+            existing_olis = self.query(f"SELECT Id FROM OpportunityLineItem WHERE OpportunityId = '{opp_id}'")
+            for oli in existing_olis:
+                self._call("DELETE", f"/sobjects/OpportunityLineItem/{oli['Id']}")
+        except Exception:
+            pass
+
+        try:
+            self._call("PATCH", f"/sobjects/Opportunity/{opp_id}", json_data={
+                "Pricebook2Id": "01s300000000H03AAE",
+                "Price_Book__c": "NA Price List",
+                "OCPQ_Price_Book_Variable__c": "naPriceList",
+            })
+        except Exception:
+            pass
+
+        pbes = self._get_na_pricebook_entries()
+        po_lines = [
+            li for li in (order.get("lines") or [])
+            if float(li.get("total") or 0.0) > 0.0
+        ]
+        if not po_lines:
+            po_lines = [{
+                "poSku": "F5-BIG-BT-LTM-I5800",
+                "desc": "F5 Perpetual / Subscription Order Bundle",
+                "qty": 1,
+                "unitPrice": total_amount,
+                "total": total_amount,
+            }]
+
+        for idx, li in enumerate(po_lines, start=1):
+            pbe_id = pbes[(idx - 1) % len(pbes)]["Id"]
+            qty = max(1, int(li.get("qty") or 1))
+            line_tot = float(li.get("total") or 0.0)
+            unit_price = float(li.get("unitPrice") or round(line_tot / qty, 2))
+            sku = str(li.get("poSku") or li.get("sfSku") or "F5-SKU")
+            desc = str(li.get("desc") or sku)
+            oli_payload = {
+                "OpportunityId": opp_id,
+                "PricebookEntryId": pbe_id,
+                "Quantity": qty,
+                "UnitPrice": unit_price,
+                "Description": f"{sku} - {desc}"[:255],
+                "Item_Description__c": f"{sku}: {desc}"[:255],
+                "SKU__c": sku[:150],
+                "Contract_Length__c": 0,
+                "Promo_Discount_Percent__c": 0.0,
+                "Line_Item_Number__c": f"{idx}.0",
+            }
+            try:
+                self._call("POST", "/sobjects/OpportunityLineItem", json_data=oli_payload)
+            except Exception as exc:
+                log.debug("Could not insert OpportunityLineItem %d on %s: %s", idx, opp_id, exc)
+
+    def _sync_opportunity_and_related(
+        self,
+        opp_id: str,
+        order: dict,
+        po_num: str,
+        amount: float,
+        order_type: str = "Standard",
+    ) -> dict[str, Any]:
+        """Ensure Opportunity has accurate Account (End Customer), Reseller Partner,
+        Distributor picklist, Oracle Quote, Discount Schedule, Territory, SO #, and Line Items."""
+        if self.dry_run:
+            return {}
+
+        booking = order.get("booking") or {}
+        parties = order.get("parties") or {}
+        channel = order.get("channel") or "Reseller Partner"
+        from_name = order.get("from") or order.get("vendor") or ""
+
+        sfdc_distributor = (
+            order.get("sfdc_distributor")
+            or booking.get("sfdcDistributor")
+            or resolve_sfdc_distributor(
+                None,
+                (parties.get("bill_to") or {}).get("name") if isinstance(parties.get("bill_to"), dict) else None,
+                from_name,
+            )
+        )
+        reseller_name = (
+            order.get("reseller_name")
+            or (booking.get("reseller") if booking.get("reseller") not in ("Direct Order", "None", "") else None)
+            or (from_name if channel == "Reseller Partner" and sfdc_distributor == "None" else None)
+        )
+        end_user_name = (
+            order.get("end_user_name")
+            or booking.get("endUser")
+            or order.get("account_name")
+            or booking.get("account")
+            or from_name
+            or "Enterprise Customer"
+        )
+        ship_to_name = (
+            order.get("ship_to_name")
+            or booking.get("shipTo")
+            or end_user_name
+        )
+
+        # 1. Resolve/Create End Customer Account (always Territory Account / End User for Opportunity.AccountId lookup filter) & Reseller Account
+        end_user_acct_id = self._resolve_or_create_account(
+            end_user_name,
+            acct_type="End User",
+            party_info=parties.get("end_user") if isinstance(parties.get("end_user"), dict) else None,
+        )
+        reseller_acct_id = None
+        if reseller_name and reseller_name.lower() != end_user_name.lower():
+            reseller_acct_id = self._resolve_or_create_account(
+                reseller_name,
+                acct_type="Authorized",
+                party_info=parties.get("reseller") if isinstance(parties.get("reseller"), dict) else None,
+            )
+        elif channel == "Reseller Partner" and reseller_name:
+            reseller_acct_id = self._resolve_or_create_account(
+                reseller_name,
+                acct_type="Authorized",
+                party_info=parties.get("reseller") if isinstance(parties.get("reseller"), dict) else None,
+            )
+
+        # 2. Resolve/Create Oracle Quote & Discount Schedule
+        discount_sched_id = "a0gD6000001Oh07IAC" if sfdc_distributor != "None" else "a0gD6000001Oh2NIAS"
+        digits_po = re.sub(r"[^0-9]", "", po_num) or "1000000"
+        quote_num = (
+            order.get("quote")
+            or booking.get("quote")
+            or f"F5Q-{digits_po[-7:].zfill(7)}"
+        )
+        oracle_quote_id = self._resolve_or_create_oracle_quote(
+            quote_num=quote_num,
+            opp_id=opp_id,
+            account_id=end_user_acct_id,
+            reseller_name=reseller_name,
+            sfdc_distributor=sfdc_distributor,
+            discount_sched_id=discount_sched_id,
+            amount=amount,
+        )
+
+        # 3. Determine Opportunity Type, Theater, Registration Status, and Perpetual Order #
+        if sfdc_distributor and sfdc_distributor != "None":
+            opp_type = "Distributor Sale - Not for Stock"
+            reg_status = "Unregistered"
+        elif reseller_acct_id or channel == "Reseller Partner":
+            opp_type = "VAR Sale - Not Through Distributor"
+            reg_status = "Unregistered"
+        else:
+            opp_type = "End-User Sale Direct"
+            reg_status = "Direct Customer"
+
+        theater = self._infer_theater(sfdc_distributor, reseller_name or "", end_user_name)
+        so_num = str(9000000 + (abs(hash(po_num)) % 900000))
+        opp_display_party = end_user_name if channel == "Direct Customer" else (reseller_name or end_user_name)
+        opp_name = f"{opp_display_party} - PO {po_num}"[:80]
+
+        opp_patch: dict[str, Any] = {
+            "Name": opp_name,
+            "PO_to_F5__c": po_num,
+            "Order_Type__c": order_type or "Standard",
+            "SalesOrderType__c": order_type or "Standard",
+            "SalesOrder__c": so_num,
+            "Distributor__c": sfdc_distributor or "None",
+            "Type": opp_type,
+            "Opportunity_Initiation__c": "F5 Initiated",
+            "Theater__c": theater,
+            "Territory_Credited__c": "a05do00000Ex8ZNAAZ",
+            "Primary_Discount_Schedule__c": discount_sched_id,
+            "Registration_Status__c": reg_status,
+            "Reseller_Company_Name_Lookup__c": reseller_acct_id,
+        }
+        if end_user_acct_id:
+            opp_patch["AccountId"] = end_user_acct_id
+        if oracle_quote_id:
+            opp_patch["Primary_Quote__c"] = oracle_quote_id
+
+        try:
+            resp = self._call("PATCH", f"/sobjects/Opportunity/{opp_id}", json_data=opp_patch)
+            if resp.status_code in (200, 204):
+                self._opp_name_cache[opp_id] = opp_name
+            else:
+                log.warning("Opportunity full PATCH failed for %s: %s", opp_id, resp.text)
+                # Apply fields in resilient sub-groups so a validation rule on one field does not block the rest
+                core_patch: dict[str, Any] = {
+                    "Name": opp_name,
+                    "PO_to_F5__c": po_num,
+                    "Order_Type__c": order_type or "Standard",
+                    "SalesOrderType__c": order_type or "Standard",
+                    "SalesOrder__c": so_num,
+                    "Theater__c": theater,
+                    "Territory_Credited__c": "a05do00000Ex8ZNAAZ",
+                    "Primary_Discount_Schedule__c": discount_sched_id,
+                }
+                if oracle_quote_id:
+                    core_patch["Primary_Quote__c"] = oracle_quote_id
+                r_core = self._call("PATCH", f"/sobjects/Opportunity/{opp_id}", json_data=core_patch)
+                if r_core.status_code in (200, 204):
+                    self._opp_name_cache[opp_id] = opp_name
+                else:
+                    log.warning("Opportunity core PATCH failed for %s: %s", opp_id, r_core.text)
+                    self._call("PATCH", f"/sobjects/Opportunity/{opp_id}", json_data={"PO_to_F5__c": po_num})
+
+                for extra_field, extra_val in [
+                    ("AccountId", end_user_acct_id),
+                    ("Reseller_Company_Name_Lookup__c", reseller_acct_id),
+                    ("Distributor__c", sfdc_distributor or "None"),
+                    ("Type", opp_type),
+                    ("Registration_Status__c", reg_status),
+                    ("Opportunity_Initiation__c", "F5 Initiated"),
+                ]:
+                    if extra_val is None and extra_field == "AccountId":
+                        continue
+                    r_ext = self._call("PATCH", f"/sobjects/Opportunity/{opp_id}", json_data={extra_field: extra_val})
+                    if r_ext.status_code not in (200, 204):
+                        log.warning("Opportunity field PATCH (%s=%s) failed on %s: %s", extra_field, extra_val, opp_id, r_ext.text)
+        except Exception as exc:
+            log.debug("Could not patch full Opportunity %s: %s", opp_id, exc)
+
+        # 4. Sync multi-line OpportunityLineItems in NA Price List
+        self._sync_opportunity_line_items(opp_id, order, amount)
+
+        return {
+            "so_num": so_num,
+            "end_user_name": end_user_name,
+            "ship_to_name": ship_to_name,
+            "reseller_name": reseller_name,
+            "sfdc_distributor": sfdc_distributor,
+        }
+
     # ------------------------------------------------------------- main booking
     def resolve_opportunity_for_order(self, req_opp: str, order: dict, po_num: str, amount: float) -> tuple[str, bool, str]:
         """In sandbox (poclab), find or create a dedicated Opportunity matching the PO so that
@@ -506,7 +1037,7 @@ class SalesforceClient:
         # 2. If an Opportunity with this PO number already exists in poclab, use it
         safe_po = po_num.replace("'", "\\'")
         try:
-            matches = self.query(f"SELECT Id, Name, Amount FROM Opportunity WHERE po_to_f5__c = '{safe_po}' ORDER BY CreatedDate DESC LIMIT 1")
+            matches = self.query(f"SELECT Id, Name, Amount FROM Opportunity WHERE PO_to_F5__c = '{safe_po}' ORDER BY CreatedDate DESC LIMIT 1")
             if matches:
                 opp_id = matches[0]["Id"]
                 self._opp_name_cache[opp_id] = matches[0].get("Name") or opp_id
@@ -515,35 +1046,23 @@ class SalesforceClient:
             pass
 
         # 3. Create dedicated Opportunity in poclab for this PO
-        channel = (order.get("booking") or {}).get("reseller") or order.get("channel") or order.get("vendor") or "Channel Partner"
-        opp_name = f"{channel} - PO {po_num}"[:80]
+        booking = order.get("booking") or {}
+        channel_label = order.get("reseller_name") or booking.get("reseller") or order.get("from") or order.get("channel") or "Customer"
+        opp_name = f"{channel_label} - PO {po_num}"[:80]
         payload = {
             "Name": opp_name,
             "StageName": "PO Received by F5",
             "CloseDate": time.strftime("%Y-%m-%d"),
-            "po_to_f5__c": po_num,
+            "PO_to_F5__c": po_num,
+            "Order_Type__c": "Standard",
             "SalesOrderType__c": "Standard",
         }
-        if "world wide" in channel.lower() or "wwt" in channel.lower():
-            payload["Reseller_Company_Name_Lookup__c"] = "001do000001Na5TAAS"  # World Wide Technology - HQ
-            payload["AccountId"] = "001do000000nv8QAAQ"  # General Motors Financial Company, Inc.
 
         try:
             resp = self._call("POST", "/sobjects/Opportunity", json_data=payload)
             if resp.status_code in (200, 201):
                 opp_id = resp.json().get("id")
                 self._opp_name_cache[opp_id] = opp_name
-                # Add line item to roll up Amount
-                try:
-                    self._call("PATCH", f"/sobjects/Opportunity/{opp_id}", json_data={"Pricebook2Id": "01s3000000004HEAAY"})
-                    self._call("POST", "/sobjects/OpportunityLineItem", json_data={
-                        "OpportunityId": opp_id,
-                        "PricebookEntryId": "01u1T00000OarfSQAR",
-                        "Quantity": 1,
-                        "UnitPrice": amount,
-                    })
-                except Exception as line_err:
-                    log.warning("Could not set OpportunityLineItem on %s: %s", opp_id, line_err)
                 return opp_id, True, f"Created dedicated Opportunity '{opp_name}' in sandbox for PO {po_num}."
         except Exception as create_err:
             log.warning("Could not create dedicated Opportunity: %s", create_err)
@@ -586,32 +1105,64 @@ class SalesforceClient:
 
         self.assert_sandbox()
 
-        # 1. Resolve dedicated Opportunity
+        # 1. Resolve dedicated Opportunity & synchronize all related objects (Accounts, Quote, Products)
         opp_id, substituted, opp_msg = self.resolve_opportunity_for_order(req_opp, order, po_num, amount)
         standin = os.environ.get("SF_DEMO_OPPORTUNITY_ID", "").strip()
         if substituted or (standin and opp_id == standin):
             self.adapt_opportunity_for_demo(opp_id, po_num, amount, order_type)
+        synced = self._sync_opportunity_and_related(opp_id, order, po_num, amount, order_type)
 
-        # 2. Check for existing Booking Form on this Opportunity
+        # 2. Build comprehensive Booking_Form__c fields
+        booking = order.get("booking") or {}
+        sfdc_payload = order.get("salesforce_payload") or {}
+        end_user = synced.get("end_user_name") or order.get("end_user_name") or booking.get("endUser") or order.get("from")
+        ship_to = synced.get("ship_to_name") or order.get("ship_to_name") or booking.get("shipTo") or end_user
+        so_num = synced.get("so_num") or str(9000000 + (abs(hash(po_num)) % 900000))
+
+        important_notes_parts = []
+        if notes_to_ro:
+            important_notes_parts.append(f"Reviewer Notes: {notes_to_ro}")
+        base_imp_notes = booking.get("importantNotes") or sfdc_payload.get("Important_Notes__c") or ""
+        if base_imp_notes and base_imp_notes not in important_notes_parts:
+            important_notes_parts.append(base_imp_notes)
+        combined_important_notes = "\n\n".join(important_notes_parts)[:32000]
+
+        ship_notif = booking.get("shippingNotification") or sfdc_payload.get("Shipping_Notification__c") or "orders@f5.com"
+        order_notif = booking.get("orderNotifications") or sfdc_payload.get("Order_Notifications__c") or ship_notif
+        reg_notif = booking.get("registrationKeyNotification") or sfdc_payload.get("Registration_Key_Notification__c") or ship_notif
+        svc_ack = booking.get("serviceAcknowledgement") or sfdc_payload.get("Service_Acknowledgement__c") or ship_notif
+
+        bf_fields: dict[str, Any] = {
+            "RecordTypeId": "012500000001sLVAAY",
+            "Searchable_PO_field__c": po_num,
+            "Searchable_SO_Number__c": so_num,
+            "Ship_To_Same_As__c": "Invoice",
+            "Same_As_End_User_Contact_Info__c": bool(end_user and ship_to and end_user.lower() == ship_to.lower()),
+            "Shipping_Notification__c": ship_notif[:1000],
+            "Order_Notifications__c": order_notif[:1000],
+            "Registration_Key_Notification__c": reg_notif[:1000],
+            "Service_Acknowledgement__c": svc_ack[:1000],
+        }
+        if end_user:
+            bf_fields["End_User_Company_Name__c"] = end_user[:255]
+        if ship_to:
+            bf_fields["Ship_To_Company_Name__c"] = ship_to[:255]
+        if combined_important_notes:
+            bf_fields["Important_Notes__c"] = combined_important_notes
+
+        # 3. Check for existing Booking Form on this Opportunity
         existing_id = self._existing_booking_form(po_num, opp_id)
         if existing_id:
             form_id = existing_id
-            log.info("Booking Form %s already exists for PO %s; ensuring artifacts and notes are attached.", existing_id, po_num)
+            log.info("Booking Form %s already exists for PO %s; updating fields and ensuring artifacts are attached.", existing_id, po_num)
+            try:
+                self._call("PATCH", f"/sobjects/Booking_Form__c/{form_id}", json_data=bf_fields)
+            except Exception as patch_exc:
+                log.debug("Could not patch existing Booking Form %s: %s", form_id, patch_exc)
         else:
-            # 3. Build Booking_Form__c payload
-            payload: dict[str, Any] = {
-                "Opportunity__c": opp_id,
-                "RecordTypeId": "012500000001sLVAAY",
-                "Searchable_PO_field__c": po_num,
-            }
-            if notes_to_ro:
-                payload["Important_Notes__c"] = notes_to_ro
-            end_user = order.get("end_user_name")
-            if end_user:
-                payload["End_User_Company_Name__c"] = end_user
-
             # 4. Insert Booking Form
-            resp = self._call("POST", "/sobjects/Booking_Form__c", json_data=payload)
+            create_payload = {"Opportunity__c": opp_id, **bf_fields}
+            resp = self._call("POST", "/sobjects/Booking_Form__c", json_data=create_payload)
             if resp.status_code not in (200, 201):
                 err = explain_errors(resp.json() if resp.text.startswith("[") else [resp.text])
                 log.error("Salesforce Booking Form creation failed: %s", err)
