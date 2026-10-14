@@ -172,9 +172,9 @@ def _token_from_sf_cli(alias: str) -> tuple[str, str]:
         raise RuntimeError("Salesforce CLI ('sf') is not installed or not on PATH.")
     cmd = [sf_bin, "org", "display", "--target-org", alias, "--json"]
     try:
-        res = subprocess.run(cmd, capture_output=True, text=True, check=False, timeout=30)
+        res = subprocess.run(cmd, capture_output=True, text=True, check=False, timeout=8)
     except subprocess.TimeoutExpired as exc:
-        raise RuntimeError("Salesforce CLI timed out.") from exc
+        raise RuntimeError("Salesforce CLI timed out waiting for org display.") from exc
     if res.returncode != 0:
         raise RuntimeError(f"Salesforce CLI failed: {res.stderr or res.stdout}")
     try:
@@ -1036,6 +1036,13 @@ class SalesforceClient:
             opp_patch["Primary_Quote__c"] = oracle_quote_id
 
         existing_opp = self._opp_record_cache.get(opp_id) or {}
+        if existing_opp.get("Registration_Status__c") in ("Approved", "Extended"):
+            opp_patch.pop("Registration_Status__c", None)
+            opp_patch.pop("Distributor__c", None)
+            opp_patch.pop("Reseller_Company_Name_Lookup__c", None)
+        elif (sfdc_distributor in (None, "None")) and existing_opp.get("Distributor__c") in (None, "None"):
+            opp_patch.pop("Distributor__c", None)
+
         existing_opp_ci = {k.lower(): v for k, v in existing_opp.items()}
         delta_patch = {
             k: v for k, v in opp_patch.items()
@@ -1052,6 +1059,9 @@ class SalesforceClient:
                 else:
                     log.warning("Opportunity PATCH failed for %s: %s", opp_id, resp.text)
                     bad_fields = {"Type", "Opportunity_Initiation__c"}
+                    resp_str = resp.text.lower()
+                    if "cannot amend distributor and reseller" in resp_str or "field_custom_validation_exception" in resp_str:
+                        bad_fields.update({"Distributor__c", "Reseller_Company_Name_Lookup__c", "Registration_Status__c"})
                     try:
                         for err_item in (resp.json() if resp.text.startswith("[") else []):
                             if isinstance(err_item, dict):

@@ -275,3 +275,66 @@ def test_salesforce_client_idempotency_patch(monkeypatch):
     assert recorded_calls[0][0] == "PATCH"
     assert "a1sEXISTING001" in recorded_calls[0][1]
 
+
+def test_salesforce_opp_deal_reg_validation_fallback(monkeypatch):
+    """Verify that when Opportunity PATCH hits FIELD_CUSTOM_VALIDATION_EXCEPTION on deal registration,
+    the fallback patch strips Distributor__c, Reseller_Company_Name_Lookup__c, and Registration_Status__c."""
+    from po_validation.act.salesforce import SalesforceClient
+
+    client = SalesforceClient(instance_url="https://test.salesforce.com", access_token="tok", dry_run=False)
+
+    monkeypatch.setattr(client, "_resolve_or_create_account", lambda *args, **kwargs: "001ACCT001")
+    monkeypatch.setattr(client, "_resolve_or_create_oracle_quote", lambda *args, **kwargs: "a09QUOTE001")
+    monkeypatch.setattr(client, "query", lambda *args, **kwargs: [])
+    monkeypatch.setattr(client, "_existing_booking_form", lambda *args, **kwargs: None)
+
+    patch_payloads = []
+    class MockValidationErrResp:
+        status_code = 400
+        text = '[{"message":"Sales cannot amend Distributor and Reseller on Approved or Extended Registered Deals. For assistance, contact your local SOS Team","errorCode":"FIELD_CUSTOM_VALIDATION_EXCEPTION","fields":[]}]'
+        def json(self):
+            return [{"message":"Sales cannot amend Distributor and Reseller on Approved or Extended Registered Deals. For assistance, contact your local SOS Team","errorCode":"FIELD_CUSTOM_VALIDATION_EXCEPTION","fields":[]}]
+
+    class MockSuccessResp:
+        status_code = 204
+        text = ""
+        def json(self): return {}
+
+    def mock_call(method, path, json_data=None, **kwargs):
+        if method == "PATCH" and "Opportunity" in path:
+            patch_payloads.append(dict(json_data))
+            if len(patch_payloads) == 1:
+                return MockValidationErrResp()
+            return MockSuccessResp()
+        return MockSuccessResp()
+
+    monkeypatch.setattr(client, "_call", mock_call)
+
+    order = {
+        "booking": {
+            "endUser": "Direct Corp",
+            "distributor": "None",
+            "reseller": None,
+            "quote": "F5Q-12345",
+        }
+    }
+
+    client._sync_opportunity_and_related(
+        opp_id="006OPP001",
+        order=order,
+        po_num="PO706839",
+        amount=50000.0,
+        order_type="Standard",
+        run_oli_sync=False,
+    )
+
+    # 1st attempt included Distributor__c / Registration_Status__c
+    assert len(patch_payloads) == 2
+    assert "Registration_Status__c" in patch_payloads[0]
+    # 2nd fallback attempt stripped them and succeeded!
+    assert "Distributor__c" not in patch_payloads[1]
+    assert "Reseller_Company_Name_Lookup__c" not in patch_payloads[1]
+    assert "Registration_Status__c" not in patch_payloads[1]
+    assert patch_payloads[1]["PO_to_F5__c"] == "PO706839"
+
+
