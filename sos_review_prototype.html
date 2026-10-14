@@ -1249,13 +1249,13 @@ textarea.modern-input {
       if (o.status === "return") {
         html += '<button type="button" class="btn-action-outline" data-action="return" style="color:var(--status-danger);border-color:var(--status-danger-border);">✉️ Draft Reseller Return Email</button>';
         if (openFlags.length === 0) {
-          html += '<button type="button" class="btn-action-primary" data-action="approve" style="background:var(--f5-blue-600);">⚡ Override &amp; Book to Salesforce</button>';
+          html += '<button type="button" class="btn-action-primary" data-action="approve" style="background:var(--f5-blue-600);">Override &amp; Book in Salesforce</button>';
         } else {
-          html += '<button type="button" class="btn-action-primary" disabled style="opacity:0.45;cursor:not-allowed;" title="Acknowledge policy exceptions below to enable override booking">⚡ Override &amp; Book (Locked)</button>';
+          html += '<button type="button" class="btn-action-primary" disabled style="opacity:0.45;cursor:not-allowed;" title="Acknowledge policy exceptions below to enable override booking">Override &amp; Book (Locked)</button>';
         }
       } else {
         html += '<button type="button" class="btn-action-outline" data-action="return">✉️ Return to Reseller</button>';
-        html += '<button type="button" class="btn-action-primary" data-action="approve" ' + (!isApprovable ? 'disabled style="opacity:0.5;cursor:not-allowed;" title="Review all flagged exceptions first"' : '') + '>⚡ 1-Click Salesforce Booking</button>';
+        html += '<button type="button" class="btn-action-primary" data-action="approve" ' + (!isApprovable ? 'disabled style="opacity:0.5;cursor:not-allowed;" title="Review all flagged exceptions first"' : '') + '>Book in Salesforce</button>';
       }
     } else {
       var sfdcBfUrl = o.sfdcRecordUrl || (o.sfdcRecordId ? ("https://f5--poclab.sandbox.my.salesforce.com/lightning/r/Booking_Form__c/" + o.sfdcRecordId + "/view") : "");
@@ -1308,7 +1308,7 @@ textarea.modern-input {
       html += '</div>';
     } else if (o.status === "ready") {
       html += '<div class="alert-callout-box alert-ready">';
-      html += '<div><strong>✓ Ready for Immediate Booking:</strong> 100% reconciliation against CPQ quote ' + escapeHtml(o.quote) + '. Click "1-Click Salesforce Booking" above.</div>';
+      html += '<div><strong>✓ Ready for Immediate Booking:</strong> 100% reconciliation against CPQ quote ' + escapeHtml(o.quote) + '. Click "Book in Salesforce" above.</div>';
       html += '</div>';
     } else if (o.status === "return") {
       var rr = getReturnReason(o);
@@ -1730,7 +1730,7 @@ textarea.modern-input {
     var html = '<div class="modal-backdrop-blur">';
     html += '<div class="modern-modal-card">';
     html += '<div class="modal-header-bar">';
-    html += '<h3>⚡ Confirm 1-Click Salesforce Booking</h3>';
+    html += '<h3>Confirm Booking in Salesforce</h3>';
     html += '<button type="button" class="btn-close-modal" id="closeModalBtn">&times;</button>';
     html += '</div>';
 
@@ -2112,7 +2112,7 @@ textarea.modern-input {
             appState.orders.unshift(order);
             saveState();
             updateApp();
-            if (bannerText) bannerText.innerHTML = "✨ <strong>PO #" + escapeHtml(order.po) + "</strong> from <strong>" + escapeHtml(order.from) + "</strong> validated &amp; ready for 1-Click Salesforce Booking!";
+            if (bannerText) bannerText.innerHTML = "✨ <strong>PO #" + escapeHtml(order.po) + "</strong> from <strong>" + escapeHtml(order.from) + "</strong> validated &amp; ready to Book in Salesforce!";
             if (progFill) progFill.style.width = "100%";
             notifyToast("✨ PO #" + order.po + " validated!");
             setTimeout(function() {

@@ -241,7 +241,7 @@ def generate_dashboard_html(manager: ApprovalManager) -> str:
             <td><code>{source}</code></td>
             <td><span class="badge badge-success">VALIDATED</span></td>
             <td style="text-align:right;">
-                <button class="btn btn-primary" data-key="{key}" onclick="approvePO(this.dataset.key)">⚡ 1-Click Approve</button>
+                <button class="btn btn-primary" data-key="{key}" onclick="approvePO(this.dataset.key)">Book in Salesforce</button>
                 <button class="btn btn-secondary" data-key="{key}" onclick="viewDetails(this.dataset.key)">View Details</button>
             </td>
         </tr>
