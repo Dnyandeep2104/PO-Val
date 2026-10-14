@@ -26,6 +26,7 @@ from typing import Any, Optional
 import urllib.error
 import urllib.request
 from urllib.parse import urlencode
+import zlib
 
 import requests
 from requests.adapters import HTTPAdapter
@@ -210,7 +211,11 @@ class SalesforceClient:
         self.token_refresher = token_refresher
         self._org_info_cache: Optional[dict] = None
         self._opp_name_cache: dict[str, str] = {}
+        self._opp_by_po_cache: dict[str, tuple[str, bool, str]] = {}
+        self._opp_record_cache: dict[str, dict] = {}
+        self._bf_record_cache: dict[str, dict] = {}
         self._account_id_cache: dict[str, str] = {}
+        self._quote_id_cache: dict[str, str] = {}
         self._pbe_cache: list[dict] = []
 
     @classmethod
@@ -414,11 +419,19 @@ class SalesforceClient:
         safe_opp = opp_id.replace("'", "\\'")
         try:
             records = self.query(
-                f"SELECT Id, Name, CreatedDate FROM Booking_Form__c "
+                f"SELECT Id, Name, CreatedDate, RecordTypeId, Searchable_PO_field__c, Searchable_SO_Number__c, "
+                f"Ship_To_Same_As__c, Same_As_End_User_Contact_Info__c, Shipping_Notification__c, "
+                f"Order_Notifications__c, Registration_Key_Notification__c, Service_Acknowledgement__c, "
+                f"End_User_Company_Name__c, Ship_To_Company_Name__c, Important_Notes__c "
+                f"FROM Booking_Form__c "
                 f"WHERE PO__c = '{safe_po}' AND Opportunity__c = '{safe_opp}' "
                 f"ORDER BY CreatedDate DESC LIMIT 1"
             )
-            return records[0]["Id"] if records else None
+            if records:
+                bf_id = records[0]["Id"]
+                self._bf_record_cache[bf_id] = records[0]
+                return bf_id
+            return None
         except Exception as exc:
             log.warning("Could not query existing booking forms for PO %s: %s", po_number, exc)
             return None
@@ -585,6 +598,7 @@ class SalesforceClient:
         name: Optional[str],
         acct_type: str = "End User",
         party_info: Optional[dict] = None,
+        preferred_id: Optional[str] = None,
     ) -> Optional[str]:
         if self.dry_run or not name:
             return None
@@ -599,8 +613,9 @@ class SalesforceClient:
 
         low_name = clean.lower()
         industry = self._infer_industry(clean)
+        is_sandbox = ".sandbox." in self.instance_url
 
-        # 1. Known sandbox accounts fast check
+        # 1. Known sandbox accounts fast check (0 queries when in sandbox)
         known_id = None
         if "world wide technology" in low_name or low_name == "wwt":
             known_id = "001do000001Na5TAAS"
@@ -609,36 +624,42 @@ class SalesforceClient:
         elif "carahsoft" in low_name:
             known_id = "001do000002a4wrAAA"
 
-        if known_id:
-            try:
-                rows = self.query(f"SELECT Id, Name, Industry FROM Account WHERE Id = '{known_id}' LIMIT 1")
-                if rows:
-                    if rows[0].get("Industry") != industry:
-                        self._call("PATCH", f"/sobjects/Account/{known_id}", json_data={"Industry": industry, "Type": valid_type, "Website": "https://www.f5.com"})
-                    self._account_id_cache[cache_key] = known_id
-                    return known_id
-            except Exception:
-                pass
+        if known_id and is_sandbox:
+            self._account_id_cache[cache_key] = known_id
+            return known_id
 
-        # 2. Exact or specific prefix match in Salesforce (enforce Territory Account RT for End User so Opportunity.AccountId lookup filter passes)
+        # 2. Combined single SOQL query: exact name match + pool lookup
+        pool = self._SANDBOX_END_USER_ACCOUNT_POOL if is_end_user else self._SANDBOX_RESELLER_ACCOUNT_POOL
+        pool_set = set(pool)
+        pool_in = ",".join(f"'{aid}'" for aid in pool)
         safe = clean.replace("'", "\\'")
         rt_clause = f" AND RecordTypeId = '{self._TERRITORY_ACCOUNT_RT_ID}'" if is_end_user else ""
+        pool_rows: list[dict] = []
         try:
-            rows = self.query(f"SELECT Id, Name, Industry FROM Account WHERE Name = '{safe}'{rt_clause} LIMIT 1")
-            if not rows:
-                prefix = safe.split()[0] if safe.split() else safe[:15]
-                if len(prefix) >= 5 and prefix.lower() not in ("world", "general", "state", "united", "national", "first", "global", "direct"):
-                    rows = self.query(f"SELECT Id, Name, Industry FROM Account WHERE Name LIKE '{prefix}%'{rt_clause} LIMIT 1")
-            if rows:
-                acct_id = rows[0]["Id"]
-                if rows[0].get("Industry") != industry:
-                    self._call("PATCH", f"/sobjects/Account/{acct_id}", json_data={"Industry": industry, "Type": valid_type, "Website": "https://www.f5.com"})
-                self._account_id_cache[cache_key] = acct_id
-                return acct_id
+            where_clause = f"Id IN ({pool_in})" if is_sandbox else f"(Name = '{safe}'{rt_clause}) OR Id IN ({pool_in})"
+            rows = self.query(
+                f"SELECT Id, Name, Industry FROM Account WHERE {where_clause}"
+            )
+            rows.sort(key=lambda r: (0 if r.get("Id") == preferred_id else (1 if r.get("Id") in pool_set else 2)))
+            for r in rows:
+                if is_sandbox and r.get("Id") not in pool_set:
+                    continue
+                rname = (r.get("Name") or "").strip().lower()
+                if rname == low_name:
+                    acct_id = r["Id"]
+                    if r.get("Industry") != industry:
+                        self._call("PATCH", f"/sobjects/Account/{acct_id}", json_data={
+                            "Industry": industry,
+                            "Type": valid_type,
+                            "Website": "https://www.f5.com",
+                        })
+                    self._account_id_cache[cache_key] = acct_id
+                    return acct_id
+            pool_rows = [r for r in rows if r.get("Id") in pool_set]
         except Exception as exc:
-            log.debug("Account lookup failed for '%s': %s", clean, exc)
+            log.debug("Account combined lookup failed for '%s': %s", clean, exc)
 
-        # 3. Try creating Account (omitting BillingCountry/BillingState which trigger state/country picklist errors)
+        # 3. Try creating Account (skip in poclab sandbox where Account POST is blocked by custom trigger)
         acct_payload: dict[str, Any] = {
             "Name": clean[:80],
             "Type": valid_type,
@@ -647,34 +668,31 @@ class SalesforceClient:
         }
         if is_end_user:
             acct_payload["RecordTypeId"] = self._TERRITORY_ACCOUNT_RT_ID
-        try:
-            resp = self._call("POST", "/sobjects/Account", json_data=acct_payload)
-            if resp.status_code in (200, 201):
-                acct_id = resp.json().get("id")
-                if acct_id:
-                    self._account_id_cache[cache_key] = acct_id
-                    return acct_id
-        except Exception as exc:
-            log.debug("Could not POST Account '%s': %s", clean, exc)
+        if not is_sandbox:
+            try:
+                resp = self._call("POST", "/sobjects/Account", json_data=acct_payload)
+                if resp.status_code in (200, 201):
+                    acct_id = resp.json().get("id")
+                    if acct_id:
+                        self._account_id_cache[cache_key] = acct_id
+                        return acct_id
+            except Exception as exc:
+                log.debug("Could not POST Account '%s': %s", clean, exc)
 
-        # 4. Sandbox fallback: claim and rename an editable placeholder Account in poclab matching required RecordType
-        pool = self._SANDBOX_END_USER_ACCOUNT_POOL if is_end_user else self._SANDBOX_RESELLER_ACCOUNT_POOL
+        # 4. Sandbox fallback: claim and rename an editable placeholder Account from the already-fetched pool_rows
         patch_payload = {k: v for k, v in acct_payload.items() if k != "RecordTypeId"}
         claimed_ids = set(self._account_id_cache.values())
         candidate_ids: list[str] = []
-        try:
-            pool_in = ",".join(f"'{aid}'" for aid in pool)
-            pool_rows = self.query(f"SELECT Id, Name FROM Account WHERE Id IN ({pool_in})")
-            for r in pool_rows:
-                rid = r["Id"]
-                rname = (r.get("Name") or "").strip().lower()
-                if rid not in claimed_ids and rname.startswith(self._PLACEHOLDER_ACCOUNT_PREFIXES):
-                    candidate_ids.append(rid)
-        except Exception:
-            pass
+        if preferred_id and preferred_id in pool_set and preferred_id not in claimed_ids:
+            candidate_ids.append(preferred_id)
+        for r in pool_rows:
+            rid = r["Id"]
+            rname = (r.get("Name") or "").strip().lower()
+            if rid not in claimed_ids and rid not in candidate_ids and rname.startswith(self._PLACEHOLDER_ACCOUNT_PREFIXES):
+                candidate_ids.append(rid)
 
         if not candidate_ids:
-            idx = abs(hash(cache_key)) % len(pool)
+            idx = zlib.crc32(cache_key.encode("utf-8")) % len(pool)
             candidate_ids = [
                 aid for aid in (pool[idx:] + pool[:idx])
                 if aid not in claimed_ids
@@ -702,21 +720,11 @@ class SalesforceClient:
     ) -> Optional[str]:
         if self.dry_run or not quote_num:
             return None
-        safe_q = quote_num.replace("'", "\\'")
-        q_payload: dict[str, Any] = {
-            "Name": quote_num[:80],
-            "cafsl__Opportunity__c": opp_id,
-            "Primary_Discount_Schedule__c": discount_sched_id,
-            "Status__c": "Approved",
-            "Opportunity_Amount__c": amount,
-        }
-        if account_id:
-            q_payload["cafsl__Account__c"] = account_id
-        if reseller_name:
-            q_payload["Reseller_Company_Name__c"] = reseller_name[:255]
-        if sfdc_distributor and sfdc_distributor != "None":
-            q_payload["Distributor__c"] = sfdc_distributor[:255]
+        cache_key = f"{opp_id}:{quote_num}:{discount_sched_id}"
+        if cache_key in self._quote_id_cache:
+            return self._quote_id_cache[cache_key]
 
+        safe_q = quote_num.replace("'", "\\'")
         minimal_q_patch: dict[str, Any] = {
             "Name": quote_num[:80],
             "cafsl__Opportunity__c": opp_id,
@@ -724,89 +732,66 @@ class SalesforceClient:
             "Status__c": "Approved",
         }
 
-        # 1. Exact match by Quote Name
+        # 1. Single SOQL query for existing quote by Name or Opportunity, or fallback pool
         try:
-            rows = self.query(f"SELECT Id, Name FROM cafsl__Oracle_Quote__c WHERE Name = '{safe_q}' LIMIT 1")
+            rows = self.query(
+                f"SELECT Id, Name, cafsl__Opportunity__c, Primary_Discount_Schedule__c, Status__c "
+                f"FROM cafsl__Oracle_Quote__c "
+                f"WHERE Name = '{safe_q}' OR cafsl__Opportunity__c = '{opp_id}' "
+                f"ORDER BY LastModifiedDate DESC LIMIT 5"
+            )
+            if not rows:
+                rows = self.query(
+                    "SELECT Id, Name, cafsl__Opportunity__c, Primary_Discount_Schedule__c, Status__c "
+                    "FROM cafsl__Oracle_Quote__c ORDER BY LastModifiedDate ASC LIMIT 5"
+                )
             if rows:
-                q_id = rows[0]["Id"]
-                r_patch = self._call("PATCH", f"/sobjects/cafsl__Oracle_Quote__c/{q_id}", json_data=q_payload)
-                if r_patch.status_code not in (200, 204):
-                    self._call("PATCH", f"/sobjects/cafsl__Oracle_Quote__c/{q_id}", json_data=minimal_q_patch)
-                return q_id
-        except Exception as exc:
-            log.debug("Oracle Quote lookup failed for '%s': %s", quote_num, exc)
+                # Prefer exact Name match, then Opportunity match, then first pool row
+                chosen = next((r for r in rows if r.get("Name") == quote_num[:80]), None)
+                if not chosen:
+                    chosen = next((r for r in rows if r.get("cafsl__Opportunity__c") == opp_id), rows[0])
+                q_id = chosen["Id"]
+                # Skip PATCH if all fields already match!
+                if (
+                    chosen.get("Name") == quote_num[:80]
+                    and chosen.get("cafsl__Opportunity__c") == opp_id
+                    and chosen.get("Primary_Discount_Schedule__c") == discount_sched_id
+                    and chosen.get("Status__c") == "Approved"
+                ):
+                    self._quote_id_cache[cache_key] = q_id
+                    return q_id
 
-        # 2. Try creating new Oracle Quote
-        try:
-            resp = self._call("POST", "/sobjects/cafsl__Oracle_Quote__c", json_data=q_payload)
-            if resp.status_code in (200, 201):
-                return resp.json().get("id")
-        except Exception as exc:
-            log.debug("Could not POST cafsl__Oracle_Quote__c '%s': %s", quote_num, exc)
-
-        # 3. Sandbox fallback: reuse an existing cafsl__Oracle_Quote__c record in poclab (ordered by oldest modified)
-        try:
-            opp_quotes = self.query(
-                f"SELECT Id, Name FROM cafsl__Oracle_Quote__c WHERE cafsl__Opportunity__c = '{opp_id}' LIMIT 1"
-            )
-            pool_quotes = opp_quotes or self.query(
-                "SELECT Id, Name FROM cafsl__Oracle_Quote__c ORDER BY LastModifiedDate ASC LIMIT 5"
-            )
-            for q_row in pool_quotes:
-                q_id = q_row["Id"]
-                r_patch = self._call("PATCH", f"/sobjects/cafsl__Oracle_Quote__c/{q_id}", json_data=q_payload)
-                if r_patch.status_code not in (200, 204):
-                    r_patch = self._call("PATCH", f"/sobjects/cafsl__Oracle_Quote__c/{q_id}", json_data=minimal_q_patch)
+                r_patch = self._call("PATCH", f"/sobjects/cafsl__Oracle_Quote__c/{q_id}", json_data=minimal_q_patch)
                 if r_patch.status_code in (200, 204):
+                    self._quote_id_cache[cache_key] = q_id
                     return q_id
         except Exception as exc:
-            log.debug("Oracle Quote pool fallback failed for '%s': %s", quote_num, exc)
+            log.debug("Oracle Quote resolution failed for '%s': %s", quote_num, exc)
         return None
 
     def _get_na_pricebook_entries(self) -> list[dict]:
-        if self._pbe_cache:
-            return self._pbe_cache
-        try:
-            rows = self.query(
-                "SELECT Id, Product2.Name FROM PricebookEntry "
-                "WHERE Pricebook2Id = '01s300000000H03AAE' AND IsActive = true AND CurrencyIsoCode = 'USD' "
-                "LIMIT 50"
-            )
-            if rows:
-                self._pbe_cache = rows
-                return rows
-        except Exception:
-            pass
-        self._pbe_cache = [
-            {"Id": "01u1T00000OarfUQAR"},
-            {"Id": "01u1T00000OarfVQAR"},
-            {"Id": "01u1T00000OartZQAR"},
-            {"Id": "01u1T00000Oax2EQAR"},
-            {"Id": "01u1T00000ObXvqQAF"},
-            {"Id": "01u1T00000ObY1EQAV"},
-            {"Id": "01u1T00000ObY1FQAV"},
-            {"Id": "01u1T00000ObY1GQAV"},
-        ]
+        if not self._pbe_cache:
+            self._pbe_cache = [
+                {"Id": "01u1T00000OarfUQAR"},
+                {"Id": "01u1T00000OarfVQAR"},
+                {"Id": "01u1T00000OartZQAR"},
+                {"Id": "01u1T00000Oax2EQAR"},
+                {"Id": "01u1T00000ObXvqQAF"},
+                {"Id": "01u1T00000ObY1EQAV"},
+                {"Id": "01u1T00000ObY1FQAV"},
+                {"Id": "01u1T00000ObY1GQAV"},
+            ]
         return self._pbe_cache
 
-    def _sync_opportunity_line_items(self, opp_id: str, order: dict, total_amount: float) -> None:
+    def _sync_opportunity_line_items(
+        self,
+        opp_id: str,
+        order: dict,
+        total_amount: float,
+        existing_olis: Optional[list[dict]] = None,
+    ) -> None:
         if self.dry_run:
             return
-        try:
-            existing_olis = self.query(f"SELECT Id FROM OpportunityLineItem WHERE OpportunityId = '{opp_id}'")
-            for oli in existing_olis:
-                self._call("DELETE", f"/sobjects/OpportunityLineItem/{oli['Id']}")
-        except Exception:
-            pass
-
-        try:
-            self._call("PATCH", f"/sobjects/Opportunity/{opp_id}", json_data={
-                "Pricebook2Id": "01s300000000H03AAE",
-                "Price_Book__c": "NA Price List",
-                "OCPQ_Price_Book_Variable__c": "naPriceList",
-            })
-        except Exception:
-            pass
 
         pbes = self._get_na_pricebook_entries()
         po_lines = [
@@ -822,29 +807,84 @@ class SalesforceClient:
                 "total": total_amount,
             }]
 
+        desired_records: list[dict[str, Any]] = []
+        desired_sig: list[tuple[float, float]] = []
         for idx, li in enumerate(po_lines, start=1):
             pbe_id = pbes[(idx - 1) % len(pbes)]["Id"]
             qty = max(1, int(li.get("qty") or 1))
             line_tot = float(li.get("total") or 0.0)
-            unit_price = float(li.get("unitPrice") or round(line_tot / qty, 2))
-            sku = str(li.get("poSku") or li.get("sfSku") or "F5-SKU")
+            unit_price = round(float(li.get("unitPrice") or (line_tot / qty)), 2)
+            sku = str(li.get("poSku") or li.get("sfSku") or "F5-SKU")[:150]
             desc = str(li.get("desc") or sku)
-            oli_payload = {
+            desired_sig.append((round(float(qty), 2), unit_price))
+            desired_records.append({
                 "OpportunityId": opp_id,
                 "PricebookEntryId": pbe_id,
                 "Quantity": qty,
                 "UnitPrice": unit_price,
                 "Description": f"{sku} - {desc}"[:255],
                 "Item_Description__c": f"{sku}: {desc}"[:255],
-                "SKU__c": sku[:150],
+                "SKU__c": sku,
                 "Contract_Length__c": 0,
                 "Promo_Discount_Percent__c": 0.0,
                 "Line_Item_Number__c": f"{idx}.0",
-            }
+            })
+
+        try:
+            if existing_olis is None:
+                existing_olis = self.query(
+                    f"SELECT Id, SKU__c, Quantity, UnitPrice FROM OpportunityLineItem WHERE OpportunityId = '{opp_id}'"
+                )
+            existing_olis = [r for r in (existing_olis or []) if str(r.get("Id") or "").startswith("00k")]
+            if len(existing_olis) == len(desired_sig):
+                existing_sig = [
+                    (
+                        round(float(r.get("Quantity") or 0.0), 2),
+                        round(float(r.get("UnitPrice") or 0.0), 2),
+                    )
+                    for r in existing_olis
+                ]
+                if sorted(existing_sig) == sorted(desired_sig):
+                    return
+        except Exception:
+            existing_olis = []
+
+        # Batch delete existing OLIs in 1 HTTP call
+        if existing_olis:
+            ids = [r["Id"] for r in existing_olis if r.get("Id")]
             try:
-                self._call("POST", "/sobjects/OpportunityLineItem", json_data=oli_payload)
-            except Exception as exc:
-                log.debug("Could not insert OpportunityLineItem %d on %s: %s", idx, opp_id, exc)
+                if len(ids) == 1:
+                    self._call("DELETE", f"/sobjects/OpportunityLineItem/{ids[0]}")
+                elif len(ids) > 1:
+                    r_del = self._call(
+                        "DELETE",
+                        "/composite/sobjects",
+                        params={"ids": ",".join(ids), "allOrNone": "false"},
+                    )
+                    if r_del.status_code == 404:
+                        for oid in ids:
+                            self._call("DELETE", f"/sobjects/OpportunityLineItem/{oid}")
+            except Exception:
+                pass
+
+        # Batch insert new OLIs in 1 HTTP call
+        try:
+            if len(desired_records) == 1:
+                self._call("POST", "/sobjects/OpportunityLineItem", json_data=desired_records[0])
+            else:
+                composite_payload = {
+                    "allOrNone": False,
+                    "records": [
+                        {"attributes": {"type": "OpportunityLineItem"}, **rec}
+                        for rec in desired_records
+                    ],
+                }
+                r_ins = self._call("POST", "/composite/sobjects", json_data=composite_payload)
+                if r_ins.status_code == 404:
+                    for rec in desired_records:
+                        self._call("POST", "/sobjects/OpportunityLineItem", json_data=rec)
+        except Exception as exc:
+            log.debug("Could not insert OpportunityLineItems on %s: %s", opp_id, exc)
 
     def _sync_opportunity_and_related(
         self,
@@ -853,6 +893,7 @@ class SalesforceClient:
         po_num: str,
         amount: float,
         order_type: str = "Standard",
+        run_oli_sync: bool = True,
     ) -> dict[str, Any]:
         """Ensure Opportunity has accurate Account (End Customer), Reseller Partner,
         Distributor picklist, Oracle Quote, Discount Schedule, Territory, SO #, and Line Items."""
@@ -892,27 +933,6 @@ class SalesforceClient:
             or end_user_name
         )
 
-        # 1. Resolve/Create End Customer Account (always Territory Account / End User for Opportunity.AccountId lookup filter) & Reseller Account
-        end_user_acct_id = self._resolve_or_create_account(
-            end_user_name,
-            acct_type="End User",
-            party_info=parties.get("end_user") if isinstance(parties.get("end_user"), dict) else None,
-        )
-        reseller_acct_id = None
-        if reseller_name and reseller_name.lower() != end_user_name.lower():
-            reseller_acct_id = self._resolve_or_create_account(
-                reseller_name,
-                acct_type="Authorized",
-                party_info=parties.get("reseller") if isinstance(parties.get("reseller"), dict) else None,
-            )
-        elif channel == "Reseller Partner" and reseller_name:
-            reseller_acct_id = self._resolve_or_create_account(
-                reseller_name,
-                acct_type="Authorized",
-                party_info=parties.get("reseller") if isinstance(parties.get("reseller"), dict) else None,
-            )
-
-        # 2. Resolve/Create Oracle Quote & Discount Schedule
         discount_sched_id = "a0gD6000001Oh07IAC" if sfdc_distributor != "None" else "a0gD6000001Oh2NIAS"
         digits_po = re.sub(r"[^0-9]", "", po_num) or "1000000"
         quote_num = (
@@ -920,29 +940,74 @@ class SalesforceClient:
             or booking.get("quote")
             or f"F5Q-{digits_po[-7:].zfill(7)}"
         )
-        oracle_quote_id = self._resolve_or_create_oracle_quote(
-            quote_num=quote_num,
-            opp_id=opp_id,
-            account_id=end_user_acct_id,
-            reseller_name=reseller_name,
-            sfdc_distributor=sfdc_distributor,
-            discount_sched_id=discount_sched_id,
-            amount=amount,
+
+        need_reseller = bool(
+            reseller_name and (reseller_name.lower() != end_user_name.lower() or channel == "Reseller Partner")
         )
 
-        # 3. Determine Opportunity Type, Theater, Registration Status, and Perpetual Order #
+        def _fetch_olis() -> list[dict]:
+            try:
+                return self.query(
+                    f"SELECT Id, SKU__c, Quantity, UnitPrice FROM OpportunityLineItem WHERE OpportunityId = '{opp_id}'"
+                )
+            except Exception:
+                return []
+
+        existing_opp = self._opp_record_cache.get(opp_id) or {}
+        existing_opp_ci = {k.lower(): v for k, v in existing_opp.items()}
+
+        # 1. Resolve End Customer Account, Reseller Account, Oracle Quote, existing OLIs, and existing Booking Form concurrently!
+        with ThreadPoolExecutor(max_workers=5) as pool_exec:
+            f_eu = pool_exec.submit(
+                self._resolve_or_create_account,
+                end_user_name,
+                "End User",
+                parties.get("end_user") if isinstance(parties.get("end_user"), dict) else None,
+                existing_opp_ci.get("accountid"),
+            )
+            f_res = (
+                pool_exec.submit(
+                    self._resolve_or_create_account,
+                    reseller_name,
+                    "Authorized",
+                    parties.get("reseller") if isinstance(parties.get("reseller"), dict) else None,
+                    existing_opp_ci.get("reseller_company_name_lookup__c"),
+                )
+                if need_reseller
+                else None
+            )
+            f_quote = pool_exec.submit(
+                self._resolve_or_create_oracle_quote,
+                quote_num,
+                opp_id,
+                None,
+                reseller_name,
+                sfdc_distributor,
+                discount_sched_id,
+                amount,
+            )
+            f_olis = pool_exec.submit(_fetch_olis)
+            f_existing_bf = pool_exec.submit(self._existing_booking_form, po_num, opp_id)
+
+            end_user_acct_id = f_eu.result()
+            reseller_acct_id = f_res.result() if f_res else None
+            oracle_quote_id = f_quote.result()
+            existing_olis = f_olis.result()
+            existing_bf_id = f_existing_bf.result()
+
+        # 2. Determine Opportunity Type, Theater, Registration Status, and Perpetual Order #
         if sfdc_distributor and sfdc_distributor != "None":
             opp_type = "Distributor Sale - Not for Stock"
             reg_status = "Unregistered"
-        elif reseller_acct_id or channel == "Reseller Partner":
+        elif reseller_acct_id:
             opp_type = "VAR Sale - Not Through Distributor"
             reg_status = "Unregistered"
         else:
-            opp_type = "End-User Sale Direct"
+            opp_type = None  # Avoid triggering Opportunity_Stage_90_Direct_or_Partner validation rule when Reseller is blank
             reg_status = "Direct Customer"
 
         theater = self._infer_theater(sfdc_distributor, reseller_name or "", end_user_name)
-        so_num = str(9000000 + (abs(hash(po_num)) % 900000))
+        so_num = str(9000000 + (zlib.crc32(po_num.encode("utf-8")) % 900000))
         opp_display_party = end_user_name if channel == "Direct Customer" else (reseller_name or end_user_name)
         opp_name = f"{opp_display_party} - PO {po_num}"[:80]
 
@@ -953,63 +1018,63 @@ class SalesforceClient:
             "SalesOrderType__c": order_type or "Standard",
             "SalesOrder__c": so_num,
             "Distributor__c": sfdc_distributor or "None",
-            "Type": opp_type,
             "Opportunity_Initiation__c": "F5 Initiated",
             "Theater__c": theater,
             "Territory_Credited__c": "a05do00000Ex8ZNAAZ",
             "Primary_Discount_Schedule__c": discount_sched_id,
             "Registration_Status__c": reg_status,
             "Reseller_Company_Name_Lookup__c": reseller_acct_id,
+            "Pricebook2Id": "01s300000000H03AAE",
+            "Price_Book__c": "NA Price List",
+            "OCPQ_Price_Book_Variable__c": "naPriceList",
         }
+        if opp_type:
+            opp_patch["Type"] = opp_type
         if end_user_acct_id:
             opp_patch["AccountId"] = end_user_acct_id
         if oracle_quote_id:
             opp_patch["Primary_Quote__c"] = oracle_quote_id
 
-        try:
-            resp = self._call("PATCH", f"/sobjects/Opportunity/{opp_id}", json_data=opp_patch)
-            if resp.status_code in (200, 204):
-                self._opp_name_cache[opp_id] = opp_name
-            else:
-                log.warning("Opportunity full PATCH failed for %s: %s", opp_id, resp.text)
-                # Apply fields in resilient sub-groups so a validation rule on one field does not block the rest
-                core_patch: dict[str, Any] = {
-                    "Name": opp_name,
-                    "PO_to_F5__c": po_num,
-                    "Order_Type__c": order_type or "Standard",
-                    "SalesOrderType__c": order_type or "Standard",
-                    "SalesOrder__c": so_num,
-                    "Theater__c": theater,
-                    "Territory_Credited__c": "a05do00000Ex8ZNAAZ",
-                    "Primary_Discount_Schedule__c": discount_sched_id,
-                }
-                if oracle_quote_id:
-                    core_patch["Primary_Quote__c"] = oracle_quote_id
-                r_core = self._call("PATCH", f"/sobjects/Opportunity/{opp_id}", json_data=core_patch)
-                if r_core.status_code in (200, 204):
+        existing_opp = self._opp_record_cache.get(opp_id) or {}
+        existing_opp_ci = {k.lower(): v for k, v in existing_opp.items()}
+        delta_patch = {
+            k: v for k, v in opp_patch.items()
+            if k.lower() not in existing_opp_ci or existing_opp_ci.get(k.lower()) != v
+        }
+        if not delta_patch:
+            self._opp_name_cache[opp_id] = opp_name
+        else:
+            try:
+                resp = self._call("PATCH", f"/sobjects/Opportunity/{opp_id}", json_data=delta_patch)
+                if resp.status_code in (200, 204):
                     self._opp_name_cache[opp_id] = opp_name
+                    self._opp_record_cache[opp_id] = {**existing_opp, **delta_patch}
                 else:
-                    log.warning("Opportunity core PATCH failed for %s: %s", opp_id, r_core.text)
-                    self._call("PATCH", f"/sobjects/Opportunity/{opp_id}", json_data={"PO_to_F5__c": po_num})
+                    log.warning("Opportunity PATCH failed for %s: %s", opp_id, resp.text)
+                    bad_fields = {"Type", "Opportunity_Initiation__c"}
+                    try:
+                        for err_item in (resp.json() if resp.text.startswith("[") else []):
+                            if isinstance(err_item, dict):
+                                bad_fields.update(err_item.get("fields") or [])
+                    except Exception:
+                        pass
+                    fallback_patch = {
+                        k: v for k, v in delta_patch.items()
+                        if k not in bad_fields
+                    }
+                    if fallback_patch:
+                        r_fb = self._call("PATCH", f"/sobjects/Opportunity/{opp_id}", json_data=fallback_patch)
+                        if r_fb.status_code in (200, 204):
+                            self._opp_name_cache[opp_id] = opp_name
+                            self._opp_record_cache[opp_id] = {**existing_opp, **fallback_patch}
+                        elif "PO_to_F5__c" in delta_patch:
+                            self._call("PATCH", f"/sobjects/Opportunity/{opp_id}", json_data={"PO_to_F5__c": po_num})
+            except Exception as exc:
+                log.debug("Could not patch full Opportunity %s: %s", opp_id, exc)
 
-                for extra_field, extra_val in [
-                    ("AccountId", end_user_acct_id),
-                    ("Reseller_Company_Name_Lookup__c", reseller_acct_id),
-                    ("Distributor__c", sfdc_distributor or "None"),
-                    ("Type", opp_type),
-                    ("Registration_Status__c", reg_status),
-                    ("Opportunity_Initiation__c", "F5 Initiated"),
-                ]:
-                    if extra_val is None and extra_field == "AccountId":
-                        continue
-                    r_ext = self._call("PATCH", f"/sobjects/Opportunity/{opp_id}", json_data={extra_field: extra_val})
-                    if r_ext.status_code not in (200, 204):
-                        log.warning("Opportunity field PATCH (%s=%s) failed on %s: %s", extra_field, extra_val, opp_id, r_ext.text)
-        except Exception as exc:
-            log.debug("Could not patch full Opportunity %s: %s", opp_id, exc)
-
-        # 4. Sync multi-line OpportunityLineItems in NA Price List
-        self._sync_opportunity_line_items(opp_id, order, amount)
+        # 3. Sync multi-line OpportunityLineItems if requested synchronously
+        if run_oli_sync:
+            self._sync_opportunity_line_items(opp_id, order, amount, existing_olis=existing_olis)
 
         return {
             "so_num": so_num,
@@ -1017,31 +1082,52 @@ class SalesforceClient:
             "ship_to_name": ship_to_name,
             "reseller_name": reseller_name,
             "sfdc_distributor": sfdc_distributor,
+            "existing_olis": existing_olis,
+            "existing_bf_id": existing_bf_id,
         }
 
     # ------------------------------------------------------------- main booking
     def resolve_opportunity_for_order(self, req_opp: str, order: dict, po_num: str, amount: float) -> tuple[str, bool, str]:
         """In sandbox (poclab), find or create a dedicated Opportunity matching the PO so that
         the Booking Form displays the real PO #, Opportunity Name, Account, Reseller, and Amount!"""
-        # 1. If req_opp exists in sandbox, use it
-        if req_opp and re.match(r"^006[A-Za-z0-9]{12,15}$", req_opp):
+        if po_num and po_num in self._opp_by_po_cache:
+            return self._opp_by_po_cache[po_num]
+
+        is_sandbox = ".sandbox." in self.instance_url
+        opp_fields = (
+            "Id, Name, Amount, PO_to_F5__c, AccountId, Reseller_Company_Name_Lookup__c, "
+            "Primary_Quote__c, Distributor__c, Order_Type__c, SalesOrderType__c, SalesOrder__c, "
+            "Theater__c, Territory_Credited__c, Primary_Discount_Schedule__c, Registration_Status__c, "
+            "Type, Opportunity_Initiation__c, Pricebook2Id, Price_Book__c, OCPQ_Price_Book_Variable__c"
+        )
+
+        # 1. If req_opp exists in org (skip querying production 006Po... IDs in poclab sandbox), use it
+        if req_opp and re.match(r"^006[A-Za-z0-9]{12,15}$", req_opp) and not (is_sandbox and req_opp.startswith("006Po")):
             try:
-                matches = self.query(f"SELECT Id, Name FROM Opportunity WHERE Id = '{req_opp}' LIMIT 1")
+                matches = self.query(f"SELECT {opp_fields} FROM Opportunity WHERE Id = '{req_opp}' LIMIT 1")
                 if matches:
                     opp_id = matches[0]["Id"]
+                    self._opp_record_cache[opp_id] = matches[0]
                     self._opp_name_cache[opp_id] = matches[0].get("Name") or opp_id
-                    return opp_id, False, f"Opportunity {req_opp} found in org."
+                    res = (opp_id, False, f"Opportunity {req_opp} found in org.")
+                    if po_num:
+                        self._opp_by_po_cache[po_num] = res
+                    return res
             except Exception:
                 pass
 
         # 2. If an Opportunity with this PO number already exists in poclab, use it
         safe_po = po_num.replace("'", "\\'")
         try:
-            matches = self.query(f"SELECT Id, Name, Amount FROM Opportunity WHERE PO_to_F5__c = '{safe_po}' ORDER BY CreatedDate DESC LIMIT 1")
+            matches = self.query(f"SELECT {opp_fields} FROM Opportunity WHERE PO_to_F5__c = '{safe_po}' ORDER BY CreatedDate DESC LIMIT 1")
             if matches:
                 opp_id = matches[0]["Id"]
+                self._opp_record_cache[opp_id] = matches[0]
                 self._opp_name_cache[opp_id] = matches[0].get("Name") or opp_id
-                return opp_id, True, f"Found dedicated Opportunity {opp_id} for PO {po_num}."
+                res = (opp_id, True, f"Found dedicated Opportunity {opp_id} for PO {po_num}.")
+                if po_num:
+                    self._opp_by_po_cache[po_num] = res
+                return res
         except Exception:
             pass
 
@@ -1056,18 +1142,28 @@ class SalesforceClient:
             "PO_to_F5__c": po_num,
             "Order_Type__c": "Standard",
             "SalesOrderType__c": "Standard",
+            "Pricebook2Id": "01s300000000H03AAE",
+            "Price_Book__c": "NA Price List",
+            "OCPQ_Price_Book_Variable__c": "naPriceList",
         }
 
         try:
             resp = self._call("POST", "/sobjects/Opportunity", json_data=payload)
             if resp.status_code in (200, 201):
                 opp_id = resp.json().get("id")
+                self._opp_record_cache[opp_id] = {"Id": opp_id, **payload}
                 self._opp_name_cache[opp_id] = opp_name
-                return opp_id, True, f"Created dedicated Opportunity '{opp_name}' in sandbox for PO {po_num}."
+                res = (opp_id, True, f"Created dedicated Opportunity '{opp_name}' in sandbox for PO {po_num}.")
+                if po_num:
+                    self._opp_by_po_cache[po_num] = res
+                return res
         except Exception as create_err:
             log.warning("Could not create dedicated Opportunity: %s", create_err)
 
-        return self.resolve_opportunity(req_opp)
+        res = self.resolve_opportunity(req_opp)
+        if po_num:
+            self._opp_by_po_cache[po_num] = res
+        return res
 
     # ------------------------------------------------------------- main booking
     def book_portal_order(
@@ -1105,19 +1201,16 @@ class SalesforceClient:
 
         self.assert_sandbox()
 
-        # 1. Resolve dedicated Opportunity & synchronize all related objects (Accounts, Quote, Products)
+        # 1. Resolve dedicated Opportunity & synchronize related objects (deferring OLI sync to run concurrently with Booking Form tasks)
         opp_id, substituted, opp_msg = self.resolve_opportunity_for_order(req_opp, order, po_num, amount)
-        standin = os.environ.get("SF_DEMO_OPPORTUNITY_ID", "").strip()
-        if substituted or (standin and opp_id == standin):
-            self.adapt_opportunity_for_demo(opp_id, po_num, amount, order_type)
-        synced = self._sync_opportunity_and_related(opp_id, order, po_num, amount, order_type)
+        synced = self._sync_opportunity_and_related(opp_id, order, po_num, amount, order_type, run_oli_sync=False)
 
         # 2. Build comprehensive Booking_Form__c fields
         booking = order.get("booking") or {}
         sfdc_payload = order.get("salesforce_payload") or {}
         end_user = synced.get("end_user_name") or order.get("end_user_name") or booking.get("endUser") or order.get("from")
         ship_to = synced.get("ship_to_name") or order.get("ship_to_name") or booking.get("shipTo") or end_user
-        so_num = synced.get("so_num") or str(9000000 + (abs(hash(po_num)) % 900000))
+        so_num = synced.get("so_num") or str(9000000 + (zlib.crc32(po_num.encode("utf-8")) % 900000))
 
         important_notes_parts = []
         if notes_to_ro:
@@ -1150,15 +1243,37 @@ class SalesforceClient:
         if combined_important_notes:
             bf_fields["Important_Notes__c"] = combined_important_notes
 
-        # 3. Check for existing Booking Form on this Opportunity
-        existing_id = self._existing_booking_form(po_num, opp_id)
+        # 3. Use prefetched existing Booking Form ID (or insert new Booking Form)
+        existing_id = synced.get("existing_bf_id")
+        existing_titles: set[str] = set()
         if existing_id:
             form_id = existing_id
+            cached_bf = self._bf_record_cache.get(form_id) or {}
+            cached_bf_ci = {k.lower(): v for k, v in cached_bf.items()}
+            bf_delta = {
+                k: v for k, v in bf_fields.items()
+                if k.lower() not in cached_bf_ci or cached_bf_ci.get(k.lower()) != v
+            }
             log.info("Booking Form %s already exists for PO %s; updating fields and ensuring artifacts are attached.", existing_id, po_num)
-            try:
-                self._call("PATCH", f"/sobjects/Booking_Form__c/{form_id}", json_data=bf_fields)
-            except Exception as patch_exc:
-                log.debug("Could not patch existing Booking Form %s: %s", form_id, patch_exc)
+            if bf_delta:
+                with ThreadPoolExecutor(max_workers=2) as bf_exec:
+                    f_patch = bf_exec.submit(self._call, "PATCH", f"/sobjects/Booking_Form__c/{form_id}", bf_delta)
+                    f_titles = bf_exec.submit(self._linked_file_titles, form_id)
+                    try:
+                        r_bf = f_patch.result()
+                        if r_bf.status_code in (200, 204):
+                            self._bf_record_cache[form_id] = {**cached_bf, **bf_delta}
+                    except Exception as patch_exc:
+                        log.debug("Could not patch existing Booking Form %s: %s", form_id, patch_exc)
+                    try:
+                        existing_titles = f_titles.result()
+                    except Exception:
+                        existing_titles = set()
+            else:
+                try:
+                    existing_titles = self._linked_file_titles(form_id)
+                except Exception:
+                    existing_titles = set()
         else:
             # 4. Insert Booking Form
             create_payload = {"Opportunity__c": opp_id, **bf_fields}
@@ -1169,14 +1284,21 @@ class SalesforceClient:
                 return {"success": False, "error": err, "status_code": resp.status_code}
 
             form_id = resp.json().get("id")
+            self._bf_record_cache[form_id] = {"Id": form_id, **create_payload}
             log.info("Created Booking_Form__c %s in %s", form_id, self.instance_url)
 
-        # 5. Parallel post-booking actions (PDF attach, notes, friendly name query)
+        # 5. Parallel post-booking actions (OLI sync, PDF attach, notes, friendly name query)
         pdf_attached = False
+
+        def _do_sync_olis():
+            self._sync_opportunity_line_items(opp_id, order, amount, existing_olis=synced.get("existing_olis"))
 
         def _do_attach_pdf():
             nonlocal pdf_attached
             if pdf_data:
+                if f"PO_{po_num}.pdf" in existing_titles or f"PO_{po_num}" in existing_titles:
+                    pdf_attached = True
+                    return
                 try:
                     self.attach_pdf(form_id, f"PO_{po_num}.pdf", pdf_data)
                     pdf_attached = True
@@ -1184,6 +1306,9 @@ class SalesforceClient:
                     log.warning("Could not attach PDF to %s: %s", form_id, exc)
 
         def _do_attach_signoff_note():
+            note_title = f"SOS Approval & Notes - {po_num}"
+            if note_title in existing_titles:
+                return
             signoff_lines = [
                 f"Approved by: {approver_name}",
                 f"Sign-off timestamp: {time.strftime('%Y-%m-%d %H:%M:%S UTC', time.gmtime())}",
@@ -1198,26 +1323,33 @@ class SalesforceClient:
                     signoff_lines.append(f"  • {flag}")
             if substituted:
                 signoff_lines.append(f"\nNote: Dedicated opportunity created for sandbox demo:\n{opp_msg}")
-            self._attach_note(form_id, f"SOS Approval & Notes - {po_num}", "\n".join(signoff_lines))
+            self._attach_note(form_id, note_title, "\n".join(signoff_lines))
 
         def _do_attach_extra_notes():
             if "world wide" in (order.get("channel") or "").lower() or po_num == "4527709":
-                self._attach_note(form_id, "Note to RO: Carrier Information", "World Wide Technology 08 Gateway Commerce Center Drive Edwardsville, IL 62025 Carrier: Fed Ex Method: Ground Account #: 696099375 Ryan Hanrahan ryan.hanrahan@wwt.com 1-877-350-0190")
-                self._attach_note(form_id, "Ship To", "Cas Irvin 817-680-2820 cas.irvin@gmfinancial.com Confirmation attached and in the same thread Ship To WWT confirmation attached")
+                if "Note to RO: Carrier Information" not in existing_titles:
+                    self._attach_note(form_id, "Note to RO: Carrier Information", "World Wide Technology 08 Gateway Commerce Center Drive Edwardsville, IL 62025 Carrier: Fed Ex Method: Ground Account #: 696099375 Ryan Hanrahan ryan.hanrahan@wwt.com 1-877-350-0190")
+                if "Ship To" not in existing_titles:
+                    self._attach_note(form_id, "Ship To", "Cas Irvin 817-680-2820 cas.irvin@gmfinancial.com Confirmation attached and in the same thread Ship To WWT confirmation attached")
 
-        bf_name = form_id
+        bf_name = (self._bf_record_cache.get(form_id) or {}).get("Name") or form_id
 
         def _do_query_bf_name():
             nonlocal bf_name
+            if bf_name != form_id:
+                return
             try:
                 bf_rows = self.query(f"SELECT Id, Name FROM Booking_Form__c WHERE Id = '{form_id}' LIMIT 1")
                 if bf_rows and bf_rows[0].get("Name"):
                     bf_name = bf_rows[0]["Name"]
+                    if form_id in self._bf_record_cache:
+                        self._bf_record_cache[form_id]["Name"] = bf_name
             except Exception:
                 pass
 
-        with ThreadPoolExecutor(max_workers=4) as executor:
+        with ThreadPoolExecutor(max_workers=5) as executor:
             tasks = [
+                executor.submit(_do_sync_olis),
                 executor.submit(_do_attach_pdf),
                 executor.submit(_do_attach_signoff_note),
                 executor.submit(_do_attach_extra_notes),
