@@ -92,3 +92,38 @@ def test_generate_dashboard_html(tmp_path):
     assert "F5 Sales Operations (SOS)" in html_page
     assert "1-Click Approval" in html_page
 
+
+def test_portal_pdf_base64_decode():
+    """Verify that SOSPortalHandler can decode and serve a PDF from pdf_b64 without NameError on base64."""
+    import base64
+    import io
+    from unittest.mock import MagicMock
+    from review_queue import SOSPortalHandler
+
+    raw_pdf = b"%PDF-1.4 test content"
+    b64_pdf = base64.b64encode(raw_pdf).decode("ascii")
+
+    mock_service = MagicMock()
+    mock_service.store.get_order.return_value = {
+        "file": "sample.pdf",
+        "pdf_b64": b64_pdf,
+    }
+
+    handler = SOSPortalHandler.__new__(SOSPortalHandler)
+    handler.service = mock_service
+    handler.path = "/api/pdf/sample_order"
+    handler.wfile = io.BytesIO()
+
+    responses = []
+    headers = []
+    handler.send_response = lambda code: responses.append(code)
+    handler.send_header = lambda k, v: headers.append((k, v))
+    handler.end_headers = lambda: None
+
+    handler.do_GET()
+
+    assert responses == [200]
+    assert ("Content-Type", "application/pdf") in headers
+    assert handler.wfile.getvalue() == raw_pdf
+
+

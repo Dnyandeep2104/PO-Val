@@ -240,9 +240,10 @@ class SalesforceClient:
                     token_refresher=lambda: _token_from_sf_cli(alias)[0],
                 )
             except Exception as exc:
-                log.warning("Could not get token from sf CLI alias '%s': %s", alias, exc)
                 if not static_token:
+                    log.warning("Could not get token from sf CLI alias '%s': %s", alias, exc)
                     raise
+                log.debug("sf CLI unavailable ('%s': %s); falling back to SF_ACCESS_TOKEN.", alias, exc)
 
         # Option B: static token
         if static_token:
