@@ -18,6 +18,7 @@ from typing import Optional
 
 from datetime import datetime, timedelta, timezone
 
+from .ai.client import F5AIClient
 from .extract import registry
 from .ingest.ledger import Ledger, NullLedger
 from .ingest.sources import Document, DocumentSource
@@ -38,6 +39,7 @@ class Pipeline:
         router: Optional[ExceptionRouter] = None,
         ledger: Optional[Ledger] = None,
         salesforce=None,
+        ai_client: Optional[F5AIClient] = None,
         record_all: bool = True,
         defer_max_attempts: int = 8,
         defer_window_hours: int = 24,
@@ -48,6 +50,7 @@ class Pipeline:
         self.router = router
         self.ledger = ledger or NullLedger()
         self.salesforce = salesforce
+        self.ai_client = ai_client or F5AIClient()
         self.record_all = record_all
         self.defer_max_attempts = defer_max_attempts
         self.defer_window_hours = defer_window_hours
@@ -59,12 +62,25 @@ class Pipeline:
     def resolve_quote(self, po: ParsedPO) -> Quote:
         return self._resolve(po) or Quote(quote_number=po.quote_number or "", found=False)
 
+    def refine_po(self, po: ParsedPO, quote: Optional[Quote] = None) -> dict:
+        if not self.ai_client:
+            return {}
+        try:
+            return self.ai_client.refine_parsed_po(po, quote)
+        except Exception as exc:
+            log.warning("AI SOS refinement skipped for %s: %s", po.source_id, exc)
+            return {}
+
     def run_checks(self, po: ParsedPO, quote: Optional[Quote]) -> ValidationResult:
         return self.engine.run(po, quote)
 
     def process_document(self, doc: Document) -> ValidationResult:
         po = self.parse_document(doc)
         quote = self._resolve(po)
+        prev_qn = po.quote_number
+        self.refine_po(po, quote)
+        if (not quote or not quote.found) and po.quote_number and po.quote_number != prev_qn:
+            quote = self._resolve(po)
         result = self.run_checks(po, quote)
 
         # A document we have already finished with is a duplicate. This is

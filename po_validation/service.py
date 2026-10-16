@@ -29,7 +29,7 @@ from .ingest.blob import BlobSource, BlobWatcher
 from .ingest.sources import Document
 from .models import Outcome, ValidationResult
 from .pipeline import Pipeline
-from .report.portal_adapter import result_to_portal_order
+from .report.portal_adapter import enrich_portal_order_analytics, result_to_portal_order
 from .resolve.base import StubQuoteSource
 from .validate.engine import load_engine
 
@@ -120,6 +120,14 @@ class OrderStore:
                     order = json.loads(f.read_text(encoding="utf-8"))
                     oid = order.get("id")
                     if oid and oid not in self._orders:
+                        # Use file mtime as fallback ingested_at_iso if missing
+                        if not order.get("ingested_at_iso"):
+                            try:
+                                mtime = datetime.fromtimestamp(f.stat().st_mtime, tz=timezone.utc)
+                                order["ingested_at_iso"] = mtime.isoformat()
+                            except Exception:
+                                pass
+                        enrich_portal_order_analytics(order)
                         self._orders[oid] = order
                 except Exception as e:
                     log.warning("Could not load stored order %s: %s", f, e)
@@ -315,6 +323,24 @@ class LivePOService:
         if self.pacing_ms > 0:
             time.sleep(self.pacing_ms / 1000.0)
 
+        # Stage 3.5: F5AI SOS Expert Cognitive Layer (Runs Before Validation Checks)
+        t_ai_start = time.perf_counter()
+        prev_qn = parsed_po.quote_number
+        ai_diag = self.pipeline.refine_po(parsed_po, quote)
+        if (not quote or not quote.found) and parsed_po.quote_number and parsed_po.quote_number != prev_qn:
+            quote = self.pipeline.resolve_quote(parsed_po)
+        ai_ms = int((time.perf_counter() - t_ai_start) * 1000)
+        po_num = parsed_po.po_number or po_num
+
+        self.bus.publish("stage_ai_refinement", {
+            "stage": "ai_refinement",
+            "po": po_num,
+            "model": ai_diag.get("model", "gpt-6-astra"),
+            "corrections_count": ai_diag.get("corrections_count", 0),
+            "latency_ms": ai_ms,
+            "message": f"🧠 F5AI SOS Expert ({ai_diag.get('model', 'gpt-6-astra')}): Verified parties, shipping address & {len(parsed_po.line_items)} SKU line(s)",
+        })
+
         # Stage 4: Run Checklist & Policy Engine
         t_rules_start = time.perf_counter()
         validation_result = self.pipeline.run_checks(parsed_po, quote)
@@ -333,6 +359,7 @@ class LivePOService:
         order["timings"] = {
             "parse_ms": parse_ms,
             "quote_ms": quote_ms,
+            "ai_ms": ai_ms,
             "rules_ms": rules_ms,
             "total_ms": total_ms,
             "rules_evaluated": len(validation_result.findings),
@@ -595,6 +622,8 @@ class LivePOService:
         sf_pre = self.sf.preflight()
         q_source = self.pipeline.quote_source
         q_mode = getattr(q_source, "name", "unknown")
+        ai_client = getattr(self.pipeline, "ai_client", None)
+        ai_model = getattr(ai_client, "model", os.environ.get("F5AI_MODEL", "gpt-6-astra"))
 
         return {
             "salesforce": sf_pre,
@@ -602,6 +631,12 @@ class LivePOService:
                 "ok": True,
                 "mode": q_mode,
                 "detail": f"Quote engine active ({q_mode})",
+            },
+            "f5ai": {
+                "ok": True,
+                "model": ai_model,
+                "gateway": os.environ.get("F5_OPENAI_BASE_URL", "https://f5ai.pd.f5net.com/openai/"),
+                "detail": f"F5AI SOS Expert active ({ai_model})",
             },
             "inbound_folder": {
                 "ok": True,

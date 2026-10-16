@@ -550,18 +550,45 @@ class SOSPortalHandler(http.server.SimpleHTTPRequestHandler):
 
         # 6. Stream/Download PO PDF
         if path.startswith("/api/pdf/"):
-            target = urllib.parse.unquote(path.replace("/api/pdf/", ""))
+            target = urllib.parse.unquote(path.replace("/api/pdf/", "")).strip("/")
             order = self.service.store.get_order(target) if self.service else None
             pdf_bytes = None
+            filename = (order.get("file") if order else None) or f"{target}.pdf"
+
             if order and order.get("pdf_path") and os.path.exists(order["pdf_path"]):
                 pdf_bytes = Path(order["pdf_path"]).read_bytes()
-            elif order and order.get("pdf_b64"):
-                pdf_bytes = base64.b64decode(order["pdf_b64"])
+            elif order and order.get("file"):
+                fname = os.path.basename(order["file"])
+                for cand_dir in (Path("out/ingested_pos"), Path("in"), Path("out/inbox/processed")):
+                    cand = cand_dir / fname
+                    if cand.is_file():
+                        pdf_bytes = cand.read_bytes()
+                        break
+            if not pdf_bytes and order and order.get("pdf_b64"):
+                try:
+                    pdf_bytes = base64.b64decode(order["pdf_b64"])
+                except Exception:
+                    pdf_bytes = None
+            if not pdf_bytes:
+                # Fallback direct filename match in out/ingested_pos/ or in/
+                safe_t = os.path.basename(target)
+                for cand_dir in (Path("out/ingested_pos"), Path("in")):
+                    for cand in (cand_dir / safe_t, cand_dir / f"{safe_t}.pdf"):
+                        if cand.is_file():
+                            pdf_bytes = cand.read_bytes()
+                            filename = cand.name
+                            break
+                    if pdf_bytes:
+                        break
 
             if pdf_bytes:
+                query_params = urllib.parse.parse_qs(parsed.query)
+                disposition = "attachment" if query_params.get("download", ["0"])[0] == "1" else "inline"
                 self.send_response(200)
                 self.send_header("Content-Type", "application/pdf")
-                self.send_header("Content-Disposition", f'inline; filename="{order.get("file", "order.pdf")}"')
+                self.send_header("Content-Disposition", f'{disposition}; filename="{filename}"')
+                self.send_header("X-Frame-Options", "SAMEORIGIN")
+                self.send_header("Access-Control-Allow-Origin", "*")
                 self.send_header("Content-Length", str(len(pdf_bytes)))
                 self.end_headers()
                 self.wfile.write(pdf_bytes)
