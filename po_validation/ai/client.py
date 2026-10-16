@@ -4,14 +4,14 @@ Connects to F5's internal OpenAI-compatible gateway (https://f5ai.pd.f5net.com/o
 using model `gpt-6-astra` to act as a Digital SOS Specialist between deterministic
 parsing and the 11-Point Validation / Salesforce Booking Form engine.
 
-Features:
-- JSONL Checkpoint caching (`out/ai_checkpoint.jsonl`) keyed by MD5 hash (`make_key`)
-- Corporate TLS handling + retry/backoff (`LLM_MAX_RETRIES = 3`, `LLM_RATE_LIMIT_SLEEP = 0.3`)
-- Cognitive PO refinement (`refine_parsed_po`):
-  * Filters out non-product table rows (shipping addresses, DROP SHIP banners, comments)
-  * Reconstructs mid-word column wraps (company names, street addresses, split emails)
-  * Disambiguates 4 party roles: Distributor (Bill-To), Reseller, End User, and Ship-To
-  * Verifies PO Total, Payment Terms, IncoTerms, CPQ Quote #, and Theater (AMER/EMEA/APAC/JAPAN)
+Security & Integrity Principles:
+- Never hardcodes API keys; reads `F5AI_API_KEY` / `OPENAI_API_KEY` strictly from environment / `.env`.
+- Enforces TLS verification by default (supports `F5AI_CA_BUNDLE` / `REQUESTS_CA_BUNDLE`), only disabling
+  verification if `F5AI_INSECURE_TLS=true` is explicitly configured.
+- Enforces a TTL retention policy (`AI_CACHE_TTL_DAYS`, default 7 days) on `out/ai_checkpoint.jsonl`.
+- Strict PO-vs-Quote separation: `refine_parsed_po` extracts and repairs fields strictly from the PO
+  document (`po.raw_text`) with snippet verification, NEVER mutating PO prices, quantities, SKUs,
+  or parties from the CPQ quote and NEVER overriding `po.confidence`.
 """
 
 from __future__ import annotations
@@ -38,7 +38,6 @@ logger = logging.getLogger("po_validation.ai")
 # ============================================================
 
 F5_OPENAI_BASE_URL = "https://f5ai.pd.f5net.com/openai/"
-DEFAULT_F5AI_API_KEY = "sk-b00da83c0cb94464a167de526da12c77"
 LLM_MODEL = "gpt-6-astra"
 LLM_MAX_TOKENS = 1400
 LLM_TEMPERATURE = 0
@@ -46,9 +45,13 @@ LLM_RATE_LIMIT_SLEEP = 0.3
 LLM_MAX_RETRIES = 3
 LLM_BATCH_SIZE = 50
 DEFAULT_CHECKPOINT_PATH = "out/ai_checkpoint.jsonl"
+DEFAULT_CACHE_TTL_DAYS = 7
+
+# Explicit SOS-approved distributor-to-F5 SKU alias table (never fuzzy-matched)
+APPROVED_SKU_ALIASES: dict[str, str] = {}
 
 
-def load_env_file(override: bool = True):
+def load_env_file(override: bool = False):
     """Simple parser for local .env without external dependencies."""
     env_path = Path(__file__).resolve().parent.parent.parent / ".env"
     if not env_path.exists():
@@ -72,24 +75,45 @@ load_env_file()
 
 
 # ============================================================
-# CHECKPOINT UTILITIES
+# CHECKPOINT UTILITIES (WITH TTL RETENTION)
 # ============================================================
+
+def _cache_ttl_seconds() -> float:
+    try:
+        days = float(os.environ.get("AI_CACHE_TTL_DAYS", str(DEFAULT_CACHE_TTL_DAYS)))
+    except ValueError:
+        days = float(DEFAULT_CACHE_TTL_DAYS)
+    return max(0.0, days * 86400.0)
+
 
 def load_checkpoint(path: str = DEFAULT_CHECKPOINT_PATH) -> Dict[str, Any]:
     cache: Dict[str, Any] = {}
     if not os.path.exists(path):
         return cache
+    now = time.time()
+    ttl = _cache_ttl_seconds()
+    kept_lines: list[str] = []
+    expired_count = 0
     try:
         with open(path, "r", encoding="utf-8") as f:
             for line in f:
-                line = line.strip()
-                if not line:
+                raw_line = line.strip()
+                if not raw_line:
                     continue
                 try:
-                    obj = json.loads(line)
+                    obj = json.loads(raw_line)
+                    ts = obj.get("ts")
+                    if ttl > 0 and ts is not None and (now - float(ts)) > ttl:
+                        expired_count += 1
+                        continue
                     cache[obj["key"]] = obj["value"]
-                except (json.JSONDecodeError, KeyError):
+                    kept_lines.append(raw_line)
+                except (json.JSONDecodeError, KeyError, TypeError, ValueError):
                     continue
+        if expired_count > 0:
+            with open(path, "w", encoding="utf-8") as fw:
+                for kl in kept_lines:
+                    fw.write(kl + "\n")
     except Exception as e:
         logger.debug(f"Could not read checkpoint {path}: {e}")
     return cache
@@ -98,8 +122,9 @@ def load_checkpoint(path: str = DEFAULT_CHECKPOINT_PATH) -> Dict[str, Any]:
 def append_checkpoint(path: str, key: str, value: Any):
     try:
         Path(path).parent.mkdir(parents=True, exist_ok=True)
+        record = {"key": key, "value": value, "ts": time.time()}
         with open(path, "a", encoding="utf-8") as f:
-            f.write(json.dumps({"key": key, "value": value}, ensure_ascii=False) + "\n")
+            f.write(json.dumps(record, ensure_ascii=False) + "\n")
     except Exception as e:
         logger.debug(f"Could not append checkpoint {path}: {e}")
 
@@ -107,9 +132,11 @@ def append_checkpoint(path: str, key: str, value: Any):
 def batch_append_checkpoint(path: str, items: list):
     try:
         Path(path).parent.mkdir(parents=True, exist_ok=True)
+        now = time.time()
         with open(path, "a", encoding="utf-8") as f:
             for key, value in items:
-                f.write(json.dumps({"key": key, "value": value}, ensure_ascii=False) + "\n")
+                record = {"key": key, "value": value, "ts": now}
+                f.write(json.dumps(record, ensure_ascii=False) + "\n")
     except Exception as e:
         logger.debug(f"Could not batch append checkpoint {path}: {e}")
 
@@ -233,7 +260,6 @@ def _unwrap_ingram_ascii_box(raw_text: str) -> dict[str, Any]:
 
     if name_parts:
         full_company = " ".join(name_parts).strip()
-        # Normalize casing while preserving acronyms
         full_company_clean = re.sub(r"\s+", " ", full_company).title()
         extracted["end_user_name"] = full_company_clean
         extracted["ship_to_name"] = full_company_clean
@@ -253,32 +279,63 @@ def _unwrap_ingram_ascii_box(raw_text: str) -> dict[str, Any]:
 
 
 def infer_theater_and_region(po: ParsedPO, quote: Optional[Quote] = None) -> tuple[str, str]:
-    """Infer Theater (AMER, EMEA, APAC, JAPAN) and Sub-Region from F5 entity, distributor, currency, and addresses."""
+    """Infer Theater (AMER, EMEA, APAC, JAPAN) and Sub-Region from F5 contracting entity,
+    party countries, currency, and explicit distributor identity (avoiding boilerplate false positives).
+    """
     entity = (po.f5_entity or "").upper()
     raw_up = (po.raw_text or "").upper()
-    layout_low = (po.layout or "").lower()
     curr = (po.currency or (quote.currency if quote else "") or "USD").upper()
 
-    if entity == "GSLLC" or "CARAHSOFT" in raw_up or "FEDERAL" in raw_up or "GOVERNMENT SOLUTIONS" in raw_up:
+    # Check party countries first if populated
+    party_countries = {
+        (p.get("country") or "").upper()
+        for p in (po.parties or [])
+        if p.get("country")
+    }
+
+    if entity == "GSLLC" or "F5 GOVERNMENT SOLUTIONS" in raw_up:
         return "AMER", "US Federal (GSLLC)"
-    if "TOKYO ELECTRON" in raw_up or "JAPAN" in raw_up or curr == "JPY":
+    if "JAPAN" in party_countries or "TOKYO ELECTRON" in raw_up or curr == "JPY":
         return "JAPAN", "Japan"
     if (
         entity == "EMEA"
         or curr in ("EUR", "GBP", "CHF", "AED")
-        or any(k in raw_up for k in ("UNITED KINGDOM", "ENGLAND", "GERMANY", "FRANCE", "EGYPT", "AZERBAIJAN", "SILICON21", "SILICON 21", "BAKOTECH", "CHERTSEY", "SURREY", "DUBAI", "NETHERLANDS"))
+        or bool(party_countries & {"GB", "UK", "UNITED KINGDOM", "DE", "GERMANY", "FR", "FRANCE", "NL", "NETHERLANDS", "AE", "EG", "EGYPT", "AZ", "AZERBAIJAN", "SA", "SAUDI ARABIA"})
+        or any(k in raw_up for k in ("F5 NETWORKS LIMITED", "CHERTSEY", "SILICON21", "SILICON 21", "BAKOTECH", "AZERBAIJAN"))
     ):
         return "EMEA", "EMEA Enterprise"
     if (
         entity == "SG"
         or curr in ("SGD", "AUD", "NZD", "TWD", "HKD", "INR", "CNY")
-        or any(k in raw_up for k in ("SINGAPORE", "TAIWAN", "CHINA", "INDIA", "AUSTRALIA", "HONG KONG", "TECH DATA ADVANCED SOLUTIONS (SINGAPORE)", "ZERO ONE", "WYSETEK", "CLOUD4C", "WELLTAKE", "NTT CHINA"))
+        or bool(party_countries & {"SG", "SINGAPORE", "IN", "INDIA", "CN", "CHINA", "TW", "TAIWAN", "AU", "AUSTRALIA", "HK", "HONG KONG"})
+        or any(k in raw_up for k in ("F5 NETWORKS SINGAPORE", "TECH DATA ADVANCED SOLUTIONS (SINGAPORE)", "ZERO ONE", "WYSETEK", "CLOUD4C", "WELLTAKE"))
     ):
         return "APAC", "APAC"
-    if any(k in raw_up for k in ("MEXICO", "BRAZIL", "COLOMBIA", "CHILE", "ARGENTINA")):
+    if bool(party_countries & {"MX", "MEXICO", "BR", "BRAZIL", "CO", "COLOMBIA", "CL", "CHILE", "AR", "ARGENTINA"}):
         return "AMER", "LATAM"
 
     return "AMER", "US Commercial"
+
+
+def _verify_snippet_in_raw_text(value: Any, snippet: Optional[str], raw_text: str) -> bool:
+    """Verify that an AI-extracted value and its supporting snippet actually appear in the PO text."""
+    if not raw_text or value is None:
+        return False
+    val_str = str(value).strip()
+    if not val_str or val_str.lower() == "null":
+        return False
+    norm_raw = re.sub(r"\s+", " ", raw_text).lower()
+    if snippet:
+        norm_snip = re.sub(r"\s+", " ", str(snippet).strip()).lower()
+        if len(norm_snip) >= 3 and norm_snip in norm_raw:
+            return True
+    norm_val = re.sub(r"\s+", " ", val_str).lower()
+    if norm_val in norm_raw:
+        return True
+    # Also check comma-stripped numeric match
+    if norm_val.replace(",", "") in norm_raw.replace(",", ""):
+        return True
+    return False
 
 
 # ============================================================
@@ -308,7 +365,7 @@ class F5AIClient:
             api_key
             or os.environ.get("F5AI_API_KEY")
             or os.environ.get("OPENAI_API_KEY")
-            or DEFAULT_F5AI_API_KEY
+            or ""
         )
         self.model = (
             model
@@ -324,16 +381,19 @@ class F5AIClient:
 
     @staticmethod
     def _get_ssl_context(base_url: str = "") -> ssl.SSLContext:
+        """Create a verified TLS context using corporate CA bundle if configured.
+        Only disables verification when F5AI_INSECURE_TLS is explicitly enabled.
+        """
         insecure = os.environ.get("F5AI_INSECURE_TLS", "").lower() in ("true", "1", "yes")
-        # Internal .f5net.com gateway uses corporate internal PKI on VPN
-        if insecure or ".f5net.com" in base_url:
+        if insecure:
             ctx = ssl.create_default_context()
             ctx.check_hostname = False
             ctx.verify_mode = ssl.CERT_NONE
             return ctx
 
         cafile = (
-            os.environ.get("REQUESTS_CA_BUNDLE")
+            os.environ.get("F5AI_CA_BUNDLE")
+            or os.environ.get("REQUESTS_CA_BUNDLE")
             or os.environ.get("CURL_CA_BUNDLE")
             or os.environ.get("SSL_CERT_FILE")
         )
@@ -386,7 +446,6 @@ class F5AIClient:
                     break
             except Exception as e:
                 logger.debug(f"F5AI endpoint unreachable (VPN offline or timeout, attempt {attempt}): {e}")
-                # If network/DNS fails on VPN host, don't block for 3 retries
                 break
 
         return None
@@ -408,7 +467,7 @@ class F5AIClient:
         return None
 
     # ------------------------------------------------------------------
-    # COGNITIVE SOS EXPERT REPAIR HELPERS (Solves Parser Blind Spots)
+    # DOCUMENT-VERIFIED PO REPAIR HELPERS (Zero Quote Contamination)
     # ------------------------------------------------------------------
     @staticmethod
     def _norm_sku(s: Optional[str]) -> str:
@@ -418,21 +477,25 @@ class F5AIClient:
         return clean
 
     def _repair_multi_qty_base_prices(
-        self, po: ParsedPO, quote: Optional[Quote], corrections: list[str]
+        self, po: ParsedPO, corrections: list[str]
     ) -> int:
         """Detects when the deterministic parser extracted the unit/base price into `total_price`
-        on multi-quantity lines (e.g. Qty=2 on Ingram Micro / CDW PO 70-AP476-D) and divided by Qty
-        to invent a halved unit_price. Multiplies Qty × Base Price to restore true Extended Totals
-        and reconciles `po.po_total`.
+        on multi-quantity lines (e.g. Qty=2 on Ingram Micro PO 70-AP476-D) and divided by Qty
+        to invent a halved unit_price.
+
+        CRITICAL INTEGRITY RULE:
+        Repairs a line ONLY when the PO's own text (`po.raw_text`) or the PO's own printed
+        footer total (`po.total_candidates`) proves that `cand_ext = money(base_price * qty)`
+        is printed on the PO itself. Never uses the CPQ quote as evidence for what the PO says.
         """
         if not po.line_items:
             return 0
 
         raw_text = po.raw_text or ""
         raw_nocomma = raw_text.replace(",", "")
-        q_lines = list(quote.lines) if (quote and quote.found and quote.lines) else []
+        if not raw_nocomma:
+            return 0
 
-        # Check if multiplying all lines' total_price by quantity matches quote.total or a PO total candidate
         hypothetical_ext_sum = Decimal("0.00")
         current_sum = Decimal("0.00")
         has_multi_qty = False
@@ -447,15 +510,9 @@ class F5AIClient:
         if not has_multi_qty:
             return 0
 
-        whole_order_matches_ext = False
-        if quote and quote.found and quote.total is not None:
-            if (
-                abs(hypothetical_ext_sum - money(quote.total)) <= Decimal("1.00")
-                and abs(current_sum - money(quote.total)) > Decimal("1.00")
-            ):
-                whole_order_matches_ext = True
-
-        if not whole_order_matches_ext and po.total_candidates:
+        # Check if the PO's own printed footer total candidate matches hypothetical_ext_sum
+        po_footer_matches_ext = False
+        if po.total_candidates:
             for cand in po.total_candidates:
                 cand_raw = (
                     cand.get("amount") or cand.get("value")
@@ -470,8 +527,31 @@ class F5AIClient:
                     abs(hypothetical_ext_sum - cand_dec) <= Decimal("1.00")
                     and abs(current_sum - cand_dec) > Decimal("1.00")
                 ):
-                    whole_order_matches_ext = True
+                    po_footer_matches_ext = True
                     break
+
+        # Also check Ingram-style pipe-delimited summary box `| <qty> | | <total>` in raw_text
+        if not po_footer_matches_ext:
+            for m_box in re.finditer(r"\|\s*\d+\s*\|\s*\|\s*(\d{1,3}(?:,\d{3})*\.\d{2}|\d+\.\d{2})\b", raw_text):
+                try:
+                    box_dec = money(m_box.group(1).replace(",", ""))
+                    if (
+                        abs(hypothetical_ext_sum - box_dec) <= Decimal("1.00")
+                        and abs(current_sum - box_dec) > Decimal("1.00")
+                    ):
+                        po_footer_matches_ext = True
+                        break
+                except Exception:
+                    continue
+
+        # If the PO already has a printed po_total that equals current_sum (and no footer candidate
+        # matches hypothetical_ext_sum), the PO genuinely totals to current_sum; do NOT alter it.
+        if (
+            po.po_total is not None
+            and abs(money(po.po_total) - current_sum) <= Decimal("1.00")
+            and not po_footer_matches_ext
+        ):
+            return 0
 
         repaired_count = 0
         for li in po.line_items:
@@ -483,37 +563,25 @@ class F5AIClient:
 
             base_price = money(li.total_price)
             cand_ext = money(base_price * qty)
-            norm_part = self._norm_sku(li.part_number)
+            # If unit_price * qty already equals total_price AND base_price is already the extended amount, skip
+            if li.unit_price is not None and abs(money(li.unit_price * qty) - base_price) <= Decimal("0.05"):
+                halved_str = f"{money(li.unit_price):.2f}"
+                if halved_str in raw_nocomma:
+                    continue
 
-            # Signal 1: Whole-order sum of (total_price * qty) matches Quote Total or PO footer candidate
-            should_repair = whole_order_matches_ext
+            ext_str = f"{cand_ext:.2f}"
+            base_str = f"{base_price:.2f}"
+            halved_str = f"{money(base_price / qty):.2f}"
 
-            # Signal 2: Quote line for this SKU has total_price == cand_ext (or unit_price == base_price)
-            if not should_repair and q_lines and norm_part:
-                sku_q_lines = [
-                    ql for ql in q_lines
-                    if ql.part_number and self._norm_sku(ql.part_number) == norm_part
-                ]
-                if sku_q_lines:
-                    matches_ext = any(
-                        ql.total_price is not None and abs(money(ql.total_price) - cand_ext) <= Decimal("0.10")
-                        for ql in sku_q_lines
-                    )
-                    matches_curr = any(
-                        ql.total_price is not None and abs(money(ql.total_price) - base_price) <= Decimal("0.10")
-                        for ql in sku_q_lines
-                    )
-                    if matches_ext and not matches_curr:
-                        should_repair = True
-
-            # Signal 3: cand_ext appears in raw PO text, while the parser's halved unit_price does not
-            if not should_repair and raw_nocomma:
-                ext_str = f"{cand_ext:.2f}"
-                halved_str = f"{money(base_price / qty):.2f}"
-                if ext_str in raw_nocomma and halved_str not in raw_nocomma:
-                    should_repair = True
-
-            if should_repair:
+            # Evidence on the PO itself: the extended amount appears in the PO's raw text
+            # (or the PO's own printed footer total equals hypothetical_ext_sum), while the
+            # halved unit price was invented by dividing the unit cost by qty.
+            has_line_evidence = (
+                ext_str in raw_nocomma
+                and base_str in raw_nocomma
+                and halved_str not in raw_nocomma
+            )
+            if has_line_evidence or (po_footer_matches_ext and ext_str in raw_nocomma):
                 li.unit_price = base_price
                 li.total_price = cand_ext
                 repaired_count += 1
@@ -521,156 +589,58 @@ class F5AIClient:
         if repaired_count > 0:
             old_po_total = po.po_total
             new_computed = po.computed_total
-            if new_computed is not None:
+            if new_computed is not None and (po.po_total is None or po_footer_matches_ext):
                 po.po_total = new_computed
             corrections.append(
-                f"Repaired {repaired_count} multi-quantity SKU line(s) where parser read Base Price instead of "
-                f"Extended Total (Qty × Base Price), reconciling PO Total from "
+                f"Repaired {repaired_count} multi-quantity SKU line(s) where parser read Unit Cost instead of "
+                f"Extended Total (verified in PO text), reconciling PO Total from "
                 f"${old_po_total or current_sum:,.2f} to ${po.po_total or new_computed:,.2f}"
             )
-            # Clear stale arithmetic warnings if all lines now reconcile
             if not po.arithmetic_failures and po.warnings:
                 po.warnings = [w for w in po.warnings if "reconcile" not in w.lower()]
 
         return repaired_count
 
-    def _consolidate_cost_center_splits(
-        self, po: ParsedPO, quote: Optional[Quote], corrections: list[str]
+    def _apply_approved_sku_aliases(
+        self, po: ParsedPO, corrections: list[str]
     ) -> int:
-        """Consolidates PO lines where an enterprise buyer split a single CPQ quote milestone
-        across multiple internal cost-center / project allocation lines (e.g. Verizon $11M + $10M = $21M).
+        """Applies only explicit, SOS-approved distributor-to-F5 SKU aliases (`APPROVED_SKU_ALIASES`).
+        Never renames SKUs based on fuzzy matching against the CPQ quote.
         """
-        if not (quote and quote.found and quote.lines and len(po.line_items) > 1):
+        if not po.line_items or not APPROVED_SKU_ALIASES:
             return 0
-
-        po_by_sku: dict[str, list[LineItem]] = {}
-        for li in po.line_items:
-            ns = self._norm_sku(li.part_number)
-            if ns:
-                po_by_sku.setdefault(ns, []).append(li)
-
-        q_by_sku: dict[str, list[Any]] = {}
-        for ql in quote.lines:
-            ns = self._norm_sku(ql.part_number)
-            if ns:
-                q_by_sku.setdefault(ns, []).append(ql)
-
-        consolidated = 0
-        lines_to_remove: list[LineItem] = []
-
-        for ns, po_group in po_by_sku.items():
-            q_group = q_by_sku.get(ns)
-            if not q_group or len(po_group) <= len(q_group):
-                continue
-
-            po_sum_tot = sum((money(x.total_price) for x in po_group if x.total_price is not None), Decimal("0.00"))
-            q_sum_tot = sum((money(x.total_price) for x in q_group if x.total_price is not None), Decimal("0.00"))
-            po_sum_qty = sum((Decimal(str(x.quantity or 0)) for x in po_group), Decimal("0"))
-            q_sum_qty = sum((Decimal(str(x.quantity or 0)) for x in q_group), Decimal("0"))
-
-            if (
-                po_sum_tot > 0
-                and abs(po_sum_tot - q_sum_tot) <= Decimal("1.00")
-                and q_sum_qty > 0
-                and po_sum_qty != q_sum_qty
-            ):
-                primary = po_group[0]
-                split_parts_str = " + ".join(f"${money(x.total_price):,.2f}" for x in po_group if x.total_price)
-                merged_descs = []
-                for x in po_group:
-                    if x.description and x.description not in merged_descs:
-                        merged_descs.append(x.description.strip())
-                primary.quantity = q_sum_qty
-                primary.total_price = po_sum_tot
-                primary.unit_price = money(po_sum_tot / q_sum_qty)
-                if merged_descs:
-                    primary.description = " | ".join(merged_descs)[:240]
-                for extra_li in po_group[1:]:
-                    lines_to_remove.append(extra_li)
-                consolidated += 1
-                corrections.append(
-                    f"Consolidated {len(po_group)} internal cost-center split lines ({split_parts_str}) "
-                    f"for SKU {primary.part_number} into {int(q_sum_qty)} commercial milestone "
-                    f"(${po_sum_tot:,.2f}) matching CPQ Quote {quote.quote_number}"
-                )
-
-        if lines_to_remove:
-            po.line_items = [li for li in po.line_items if li not in lines_to_remove]
-
-        return consolidated
-
-    def _reconcile_catalog_suffix_skus(
-        self, po: ParsedPO, quote: Optional[Quote], corrections: list[str]
-    ) -> int:
-        """Normalizes reseller/distributor catalog suffix SKUs (e.g. WWT `F5-ADD-BIG-R56R59B` ->
-        CPQ `F5-ADD-BIG-R56R59`) when Qty and Extended Price match the CPQ quote line 100%.
-        """
-        if not (quote and quote.found and quote.lines and po.line_items):
-            return 0
-
-        q_norm_set = {self._norm_sku(ql.part_number) for ql in quote.lines if ql.part_number}
-        po_norm_set = {self._norm_sku(li.part_number) for li in po.line_items if li.part_number}
-
-        unmatched_q = [
-            ql for ql in quote.lines
-            if ql.part_number and self._norm_sku(ql.part_number) not in po_norm_set
-        ]
-        if not unmatched_q:
-            return 0
-
         normalized_count = 0
         for li in po.line_items:
-            if not li.part_number or self._norm_sku(li.part_number) in q_norm_set:
+            if not li.part_number:
                 continue
-            li_norm = self._norm_sku(li.part_number)
-            li_tot = money(li.total_price) if li.total_price is not None else None
-            if li_tot is None:
-                continue
-
-            for ql in list(unmatched_q):
-                ql_norm = self._norm_sku(ql.part_number)
-                ql_tot = money(ql.total_price) if ql.total_price is not None else None
-                if ql_tot is None or abs(li_tot - ql_tot) > Decimal("0.10"):
-                    continue
-                if li.quantity is not None and ql.quantity is not None and li.quantity != ql.quantity:
-                    continue
-
-                # Check if SKU differs only by a trailing catalog revision letter (e.g. R56R59B vs R56R59)
-                is_suffix_variant = (
-                    (len(li_norm) == len(ql_norm) + 1 and li_norm[:-1] == ql_norm)
-                    or (len(ql_norm) == len(li_norm) + 1 and ql_norm[:-1] == li_norm)
+            canonical = APPROVED_SKU_ALIASES.get(li.part_number.strip().upper())
+            if canonical and canonical != li.part_number:
+                orig_sku = li.part_number
+                li.part_number = canonical
+                normalized_count += 1
+                corrections.append(
+                    f"Mapped approved distributor alias SKU '{orig_sku}' to canonical F5 SKU '{canonical}'"
                 )
-                if is_suffix_variant:
-                    orig_sku = li.part_number
-                    li.part_number = ql.part_number
-                    if orig_sku not in (li.description or ""):
-                        li.description = f"{(li.description or '').strip()} [Partner Catalog SKU: {orig_sku}]".strip()
-                    unmatched_q.remove(ql)
-                    normalized_count += 1
-                    corrections.append(
-                        f"Normalized partner catalog revision SKU '{orig_sku}' to canonical CPQ SKU "
-                        f"'{ql.part_number}' (verified exact Qty {int(li.quantity or 1)} & ${li_tot:,.2f} match)"
-                    )
-                    break
-
         return normalized_count
 
     def _repair_parties_and_headers(
-        self, po: ParsedPO, quote: Optional[Quote], corrections: list[str]
+        self, po: ParsedPO, corrections: list[str]
     ) -> None:
-        """Recovers buried payment terms, contact details, Importer of Record, and fixes
-        Remit-To lockbox or ASCII box header labels misclassified as Ship-To/End-User.
+        """Recovers buried payment terms and contact details strictly from the PO text (`po.raw_text`),
+        and removes F5's own Bank of America remit-to lockbox if misclassified as Ship-To.
+        Never fabricates customer names from the quote, never overrides `po_box` flags on real Ship-To
+        parties, and never treats a freight forwarder as an Importer of Record.
         """
         raw = po.raw_text or ""
 
-        # 1. Buried Payment Terms (e.g. `| NET 30 |` on Ingram Micro POs)
+        # 1. Buried Payment Terms in PO text (e.g. `| NET 30 |`)
         if not po.payment_terms and raw:
             m_pay = re.search(r"\b(NET\s*\d{2,3}|NT\d{2})\b", raw, re.I)
             if m_pay:
                 po.payment_terms = re.sub(r"\s+", " ", m_pay.group(1).upper()).strip()
-                corrections.append(f"Extracted Payment Terms '{po.payment_terms}' from PO header")
+                corrections.append(f"Extracted Payment Terms '{po.payment_terms}' from PO text")
 
-        # 2. Buried Contact Name / Email / Phone in SKU descriptions or comments (e.g. 70-AP476-D)
+        # 2. Buried Contact Name / Email / Phone / End-User in PO SKU descriptions or comments (e.g. 70-AP476-D)
         buried_contact: Optional[str] = None
         buried_email: Optional[str] = None
         buried_phone: Optional[str] = None
@@ -690,7 +660,6 @@ class F5AIClient:
             if m_cphone:
                 buried_phone = m_cphone.group(1).strip()
 
-            # Reconstruct wrapped email like `JESSE.HOGUE@ACTIVEPROSPECT.C\n... OM` or `...C OM`
             joined_text = raw + " " + " ".join((li.description or "") for li in po.line_items)
             m_cemail = re.search(
                 r"CUSTOMER\s+EMAIL\s*[:\-]?\s*([A-Z0-9._%+\-]+@[A-Z0-9.\-]+)(?:(?:\s*\n[|\s]*|\s+)(OM|COM|NET|ORG)\b)?",
@@ -707,20 +676,21 @@ class F5AIClient:
                 if "@" in base_em and "." in base_em.split("@")[-1] and len(base_em.split(".")[-1]) >= 2:
                     buried_email = base_em
 
-        # 3. Clean ASCII box prefix / DROP SHIP / Remit-To lockbox on Ship-To & End-User parties
-        remit_lockbox_removed = False
+        # 3. Clean ASCII box prefix / DROP SHIP / F5 Remit-To lockbox on Ship-To & End-User parties
         cleaned_parties = []
         for p in po.parties:
             role = p.get("role")
             pname = (p.get("name") or "").strip()
             plines_joined = " ".join(p.get("lines") or [])
 
-            # Detect F5 Remit-To Lockbox (Bank of America PO Box) misclassified as Ship-To
+            # Detect F5's own Remit-To Lockbox (Bank of America PO Box 847510) misclassified as Ship-To
             if role == "ship_to" and (
                 re.search(r"\bF5\s+Networks\b", pname, re.I)
-                or re.search(r"\bBank\s+of\s+America\b", plines_joined, re.I)
+                and re.search(r"\bBank\s+of\s+America\b", plines_joined, re.I)
             ):
-                remit_lockbox_removed = True
+                p["role"] = "remit_to"
+                cleaned_parties.append(p)
+                corrections.append("Reclassified F5/Bank of America lockbox from Ship-To to Remit-To")
                 continue
 
             # Clean pipe-delimited ASCII box prefixes from party name (`003 | | | | INFUTOR DATA SOLUTION`)
@@ -728,22 +698,9 @@ class F5AIClient:
                 clean_n = re.sub(r"^0\d{2}\s*(?:\|\s*)+", "", pname)
                 clean_n = re.sub(r"\|+", " ", clean_n).strip()
                 if re.search(r"D\s*R\s*O\s*P\s*S\s*H\s*I\s*P", clean_n, re.I):
-                    clean_n = buried_eu_name or (quote.end_user_name if quote else "") or ""
+                    clean_n = buried_eu_name or ""
                 if clean_n:
                     p["name"] = clean_n.title() if clean_n.isupper() else clean_n
-
-            # Replace generic Bill-to-Address label on Ship-To with actual customer name
-            if role == "ship_to" and re.search(r"Bill-to-Address", p.get("name") or "", re.I):
-                real_cust = (
-                    (quote.end_user_name if quote else None)
-                    or (quote.account_name if quote else None)
-                    or buried_eu_name
-                )
-                if real_cust:
-                    p["name"] = real_cust
-                    corrections.append(
-                        f"Resolved generic Ship-To label 'Regd Corp Bill-to-Address' to customer '{real_cust}'"
-                    )
 
             # Enrich missing contact details on Ship-To / End-User if found in PO body
             if role in ("ship_to", "end_user"):
@@ -764,69 +721,18 @@ class F5AIClient:
                 f"{buried_email or buried_phone or ''}) from wrapped SKU description block"
             )
 
-        # If Remit-To lockbox was misclassified as Ship-To (e.g. NTT PO 4501706557 for Oracle America)
-        if remit_lockbox_removed:
-            existing_st = [p for p in po.parties if p.get("role") == "ship_to" and p.get("name")]
-            if not existing_st:
-                real_customer = (
-                    (po.party("end_user") or {}).get("name")
-                    or (quote.end_user_name if quote else None)
-                    or (quote.account_name if quote else None)
-                )
-                if not real_customer and re.search(r"Oracle\s+America", raw, re.I):
-                    real_customer = "Oracle America, Inc."
-                if real_customer:
-                    addr_lines = [real_customer]
-                    if "redwood shores" in raw.lower() or "oracle" in real_customer.lower():
-                        addr_lines.append("500 Oracle Parkway, Redwood Shores, CA 94065, USA")
-                    po.parties.append({
-                        "role": "ship_to",
-                        "name": real_customer,
-                        "lines": addr_lines,
-                        "po_box": False,
-                        "care_of": False,
-                        "emails": [],
-                        "phones": [],
-                    })
-                    corrections.append(
-                        f"Removed F5/Bank of America remit-to lockbox from Ship-To and assigned true Ship-To customer '{real_customer}'"
-                    )
-            else:
-                for st_p in existing_st:
-                    st_p["po_box"] = False
-                    st_p["care_of"] = False
-                corrections.append(
-                    f"Removed F5/Bank of America remit-to lockbox from Ship-To and verified customer '{existing_st[0]['name']}'"
-                )
-
-        # 4. International Importer of Record / Customs GST extraction (e.g. Tech Data India PO 6300605596)
-        if not po.importer_of_record and raw:
-            m_gst = re.search(r"GST\s+Number\s*:\s*([A-Z0-9]{10,20})", raw, re.I)
-            m_fwd = re.search(r"(Expeditors\s+International[^\n,]*)", raw, re.I)
-            if m_gst or m_fwd or "IMPORTTRADEVEND" in raw.upper():
-                ior_parts = []
-                if m_fwd:
-                    ior_parts.append(m_fwd.group(1).strip())
-                if m_gst:
-                    ior_parts.append(f"GST: {m_gst.group(1).strip()}")
-                elif "IMPORTTRADEVEND" in raw.upper():
-                    ior_parts.append("GST: IMPORTTRADEVEND")
-                po.importer_of_record = " / ".join(ior_parts) or "Verified on PO"
-                corrections.append(
-                    f"Extracted Importer of Record / Customs GST credentials ('{po.importer_of_record}') from PO"
-                )
-
     # ------------------------------------------------------------------
     # MAIN SOS EXPERT REFINEMENT LAYER (Runs After Parser, Before Rules)
     # ------------------------------------------------------------------
     def refine_parsed_po(self, po: ParsedPO, quote: Optional[Quote] = None) -> dict[str, Any]:
-        """Acts as the Digital SOS Expert: inspects the PO + initial parse, cleans line items,
-        repairs multi-quantity unit vs. extended prices, consolidates cost-center splits,
-        normalizes catalog suffix SKUs, unwraps split addresses/emails, classifies all 4 party roles,
-        and prepares the PO for accurate 11-point validation and Salesforce Booking Form creation.
+        """Acts as the Digital SOS Expert: inspects the PO document (`po.raw_text`) + initial parse,
+        filters non-SKU address/comment rows, repairs multi-quantity unit vs. extended prices when
+        verified by the PO's own text, unwraps split addresses/emails, and verifies party roles
+        with verbatim snippet checks—without ever contaminating PO extraction with CPQ quote values.
         """
         t_start = time.perf_counter()
         corrections: list[str] = []
+        disagreements: list[str] = []
 
         # 1. Deterministic SOS Cognitive Pre-Clean (filter non-SKU address/comment rows)
         raw_lines_before = len(po.line_items)
@@ -843,16 +749,13 @@ class F5AIClient:
                 f"Filtered {removed_fake_lines} non-product address/comment row(s) from SKU table"
             )
 
-        # 2. Repair Multi-Quantity Base Price vs. Extended Total (e.g. Ingram Micro / CDW 70-AP476-D)
-        repaired_qty_lines = self._repair_multi_qty_base_prices(po, quote, corrections)
+        # 2. Repair Multi-Quantity Base Price vs. Extended Total using ONLY PO document evidence
+        repaired_qty_lines = self._repair_multi_qty_base_prices(po, corrections)
 
-        # 3. Consolidate Enterprise Cost-Center Split Lines (e.g. Verizon 8500912211)
-        consolidated_splits = self._consolidate_cost_center_splits(po, quote, corrections)
+        # 3. Apply only explicit SOS-approved SKU aliases (never fuzzy-renaming against quote)
+        normalized_skus = self._apply_approved_sku_aliases(po, corrections)
 
-        # 4. Reconcile Partner Catalog Revision Suffix SKUs (e.g. WWT 4661555)
-        normalized_skus = self._reconcile_catalog_suffix_skus(po, quote, corrections)
-
-        # 5. Unwrap ASCII box / fixed-width split company names & emails (e.g. Ingram Micro)
+        # 4. Unwrap ASCII box / fixed-width split company names & emails from PO text (e.g. Ingram Micro)
         unwrapped = _unwrap_ingram_ascii_box(po.raw_text)
         for msg in unwrapped.get("unwrapped_items", []):
             corrections.append(msg)
@@ -877,12 +780,12 @@ class F5AIClient:
             if unwrapped.get("email") and unwrapped["email"] not in (st_party.get("emails") or []):
                 st_party.setdefault("emails", []).append(unwrapped["email"])
 
-        # 6. Recover buried headers, contacts, IOR, and fix Remit-To lockbox misclassifications
-        self._repair_parties_and_headers(po, quote, corrections)
+        # 5. Recover buried headers & contacts from PO text, and reclassify F5 Remit-To lockbox
+        self._repair_parties_and_headers(po, corrections)
 
-        # 7. Check Checkpoint Cache or Call F5AI `gpt-6-astra`
+        # 6. Check Checkpoint Cache or Call F5AI `gpt-6-astra` (strictly PO-only input, no quote_context)
         cache_id = po.content_hash or po.source_id or po.po_number or "unknown_po"
-        cache_key = make_key(cache_id, f"sos_expert_v3::{self.model}")
+        cache_key = make_key(cache_id, f"sos_expert_v4_strict::{self.model}")
         cache = F5AIClient._shared_cache if F5AIClient._shared_cache is not None else {}
 
         ai_payload: Optional[dict[str, Any]] = None
@@ -892,7 +795,6 @@ class F5AIClient:
             ai_payload = cache[cache_key]
             ai_source = f"{self.model} (checkpoint)"
         else:
-            # Prepare concise prompt for gpt-6-astra SOS Expert
             candidate_summary = {
                 "po_number": po.po_number,
                 "quote_number": po.quote_number,
@@ -922,46 +824,27 @@ class F5AIClient:
                     for li in po.line_items[:20]
                 ],
             }
-            quote_context = None
-            if quote and quote.found:
-                quote_context = {
-                    "quote_number": quote.quote_number,
-                    "account_name": quote.account_name,
-                    "end_user_name": getattr(quote, "end_user_name", None),
-                    "reseller_name": quote.reseller_name,
-                    "total": str(quote.total) if quote.total else None,
-                    "currency": quote.currency,
-                }
 
             system_prompt = (
                 "You are a Senior F5 Sales Operations (SOS) Order Booking Expert. "
                 "Your job is to inspect a vendor Purchase Order's raw text alongside the initial parser output "
-                "and return a clean JSON object with verified PO attributes. "
-                "Distinguish true product SKUs from shipping addresses or comments, verify that multi-quantity lines "
-                "use Qty * Base Price = Extended Total, unwrap any line-broken company names or emails, "
-                "and identify the 4 key parties: distributor (Bill-To), reseller, end_user, and ship_to. "
-                "Return ONLY valid JSON."
+                "and return a JSON object reporting ONLY what is explicitly printed on the Purchase Order. "
+                "Every extracted field must be backed by a verbatim `snippet` from the PO text. "
+                "Do NOT invent or infer values that are not on the PO. Return ONLY valid JSON."
             )
             user_prompt = (
                 f"INITIAL PARSER CANDIDATE:\n{json.dumps(candidate_summary, ensure_ascii=False)}\n\n"
-                f"MATCHED CPQ QUOTE CONTEXT:\n{json.dumps(quote_context, ensure_ascii=False)}\n\n"
                 f"RAW PO TEXT EXCERPT:\n{(po.raw_text or '')[:3500]}\n\n"
                 "Return JSON with keys:\n"
                 '{\n'
-                '  "po_number": str or null,\n'
-                '  "quote_number": str or null,\n'
-                '  "po_total": float or null,\n'
-                '  "currency": str,\n'
-                '  "payment_terms": str or null,\n'
-                '  "inco_terms": str or null,\n'
-                '  "f5_entity": "CORP"|"GSLLC"|"EMEA"|"SG"|null,\n'
-                '  "theater": "AMER"|"EMEA"|"APAC"|"JAPAN",\n'
-                '  "distributor_name": str or null,\n'
-                '  "reseller_name": str or null,\n'
-                '  "end_user_name": str or null,\n'
-                '  "ship_to_name": str or null,\n'
-                '  "ship_to_address": str or null,\n'
-                '  "contact_email": str or null,\n'
+                '  "po_number": {"value": str or null, "snippet": str or null},\n'
+                '  "quote_number": {"value": str or null, "snippet": str or null},\n'
+                '  "payment_terms": {"value": str or null, "snippet": str or null},\n'
+                '  "inco_terms": {"value": str or null, "snippet": str or null},\n'
+                '  "f5_entity": {"value": "CORP"|"GSLLC"|"EMEA"|"SG"|null, "snippet": str or null},\n'
+                '  "reseller_name": {"value": str or null, "snippet": str or null},\n'
+                '  "end_user_name": {"value": str or null, "snippet": str or null},\n'
+                '  "ship_to_name": {"value": str or null, "snippet": str or null},\n'
                 '  "corrections": [str],\n'
                 '  "sos_verdict": str\n'
                 '}'
@@ -975,69 +858,87 @@ class F5AIClient:
                 cache[cache_key] = ai_payload
                 append_checkpoint(self.checkpoint_path, cache_key, ai_payload)
 
-        # 8. Apply AI SOS Expert Refinements safely to ParsedPO
+        # 7. Apply AI SOS Expert Refinements ONLY when verified against `po.raw_text`
+        def _extract_verified_field(field_key: str) -> Optional[str]:
+            if not ai_payload:
+                return None
+            entry = ai_payload.get(field_key)
+            if isinstance(entry, dict):
+                val = entry.get("value")
+                snip = entry.get("snippet")
+            else:
+                val = entry
+                snip = str(entry) if entry is not None else None
+            if val is None or str(val).strip().lower() in ("", "null", "none"):
+                return None
+            if _verify_snippet_in_raw_text(val, snip, po.raw_text or ""):
+                return str(val).strip()
+            return None
+
         if ai_payload:
-            if not po.po_number and ai_payload.get("po_number"):
-                po.po_number = str(ai_payload["po_number"]).strip()
-                corrections.append(f"Extracted PO Number '{po.po_number}' via {self.model}")
+            v_po_num = _extract_verified_field("po_number")
+            if v_po_num:
+                if not po.po_number:
+                    po.po_number = v_po_num
+                    corrections.append(f"Extracted PO Number '{po.po_number}' (verified in PO text)")
+                elif po.po_number != v_po_num:
+                    disagreements.append(f"po_number: parser='{po.po_number}' vs AI='{v_po_num}'")
 
-            if not po.quote_number and ai_payload.get("quote_number"):
-                qn = str(ai_payload["quote_number"]).strip()
-                if qn and qn.lower() != "null":
-                    po.quote_number = qn
-                    if qn not in po.quote_numbers:
-                        po.quote_numbers.append(qn)
-                    corrections.append(f"Recovered buried CPQ Quote reference '{qn}'")
+            v_quote = _extract_verified_field("quote_number")
+            if v_quote:
+                if not po.quote_number:
+                    po.quote_number = v_quote
+                    if v_quote not in po.quote_numbers:
+                        po.quote_numbers.append(v_quote)
+                    corrections.append(f"Recovered buried CPQ Quote reference '{v_quote}' (verified in PO text)")
+                elif po.quote_number != v_quote and v_quote not in po.quote_numbers:
+                    disagreements.append(f"quote_number: parser='{po.quote_number}' vs AI='{v_quote}'")
 
-            if not po.payment_terms and ai_payload.get("payment_terms"):
-                po.payment_terms = str(ai_payload["payment_terms"]).strip()
-                corrections.append(f"Identified Payment Terms '{po.payment_terms}'")
+            v_terms = _extract_verified_field("payment_terms")
+            if v_terms:
+                if not po.payment_terms:
+                    po.payment_terms = v_terms
+                    corrections.append(f"Identified Payment Terms '{po.payment_terms}' (verified in PO text)")
+                elif po.payment_terms.upper() != v_terms.upper():
+                    disagreements.append(f"payment_terms: parser='{po.payment_terms}' vs AI='{v_terms}'")
 
-            if not po.inco_terms and ai_payload.get("inco_terms"):
-                po.inco_terms = str(ai_payload["inco_terms"]).strip()
-                corrections.append(f"Identified IncoTerms '{po.inco_terms}'")
+            v_inco = _extract_verified_field("inco_terms")
+            if v_inco and not po.inco_terms:
+                po.inco_terms = v_inco
+                corrections.append(f"Identified IncoTerms '{po.inco_terms}' (verified in PO text)")
 
-            if not po.f5_entity and ai_payload.get("f5_entity") in ("CORP", "GSLLC", "EMEA", "SG"):
-                po.f5_entity = ai_payload["f5_entity"]
-                corrections.append(f"Classified target F5 legal entity '{po.f5_entity}'")
+            v_reseller = _extract_verified_field("reseller_name")
+            if v_reseller and not po.reseller_name:
+                po.reseller_name = v_reseller
+                corrections.append(f"Resolved Reseller Partner '{po.reseller_name}' (verified in PO text)")
 
-            if ai_payload.get("reseller_name") and not po.reseller_name:
-                po.reseller_name = str(ai_payload["reseller_name"]).strip()
-                corrections.append(f"Resolved Reseller Partner '{po.reseller_name}'")
-
-            if ai_payload.get("end_user_name"):
-                eu_name = str(ai_payload["end_user_name"]).strip()
+            v_eu = _extract_verified_field("end_user_name")
+            if v_eu:
                 eu_p = po.party("end_user")
                 if not eu_p:
-                    po.parties.append({"role": "end_user", "name": eu_name, "lines": [eu_name], "emails": []})
-                    corrections.append(f"Populated End User entity '{eu_name}'")
+                    po.parties.append({"role": "end_user", "name": v_eu, "lines": [v_eu], "emails": []})
+                    corrections.append(f"Populated End User entity '{v_eu}' (verified in PO text)")
                 elif not eu_p.get("name"):
-                    eu_p["name"] = eu_name
-                    corrections.append(f"Populated End User entity '{eu_name}'")
+                    eu_p["name"] = v_eu
+                    corrections.append(f"Populated End User entity '{v_eu}' (verified in PO text)")
 
-            if ai_payload.get("ship_to_name"):
-                st_name = str(ai_payload["ship_to_name"]).strip()
+            v_st = _extract_verified_field("ship_to_name")
+            if v_st:
                 st_p = po.party("ship_to")
                 if not st_p:
-                    lines = [st_name]
-                    if ai_payload.get("ship_to_address"):
-                        lines.append(str(ai_payload["ship_to_address"]))
-                    po.parties.append({"role": "ship_to", "name": st_name, "lines": lines, "emails": []})
-                    corrections.append(f"Populated Ship-To destination '{st_name}'")
+                    po.parties.append({"role": "ship_to", "name": v_st, "lines": [v_st], "emails": []})
+                    corrections.append(f"Populated Ship-To destination '{v_st}' (verified in PO text)")
                 elif not st_p.get("name"):
-                    st_p["name"] = st_name
-                    corrections.append(f"Populated Ship-To destination '{st_name}'")
+                    st_p["name"] = v_st
+                    corrections.append(f"Populated Ship-To destination '{v_st}' (verified in PO text)")
 
-            for c_item in ai_payload.get("corrections") or []:
-                if isinstance(c_item, str) and c_item not in corrections:
-                    corrections.append(c_item)
+        for d_msg in disagreements:
+            po.warnings.append(f"AI/Parser disagreement flagged for SOS review: {d_msg}")
 
-        # 9. Enrich Party Attribution & Theater using Quote + PO synthesis (SOS Specialist Intelligence)
+        # 8. Infer Theater & Sub-Region
         theater, sub_region = infer_theater_and_region(po, quote)
-        if ai_payload and ai_payload.get("theater") in ("AMER", "EMEA", "APAC", "JAPAN"):
-            theater = ai_payload["theater"]
 
-        # Ensure End User & Ship-To are cross-enriched when PO has "Same as Ship To" or channel structure
+        # Ensure End User & Ship-To are cross-enriched ONLY when PO explicitly says "Same as Ship To"
         st_party = po.party("ship_to")
         eu_party = po.party("end_user")
         if eu_party and st_party:
@@ -1046,20 +947,18 @@ class F5AIClient:
                 eu_party["name"] = st_party["name"]
                 corrections.append(f"Resolved 'Same as Ship To' End User to '{st_party['name']}'")
 
-        # Reconcile PO Total if line items sum cleanly and po_total was missing
+        # Reconcile PO Total ONLY if po_total was missing and line items sum cleanly
         if po.po_total is None and po.computed_total is not None:
             po.po_total = po.computed_total
-            corrections.append(f"Reconciled header PO Total (${po.po_total:,.2f}) from verified SKU lines")
+            corrections.append(f"Derived missing header PO Total (${po.po_total:,.2f}) from verified SKU lines")
 
         rescued_from_false_block = bool(
             removed_fake_lines > 0
             or repaired_qty_lines > 0
-            or consolidated_splits > 0
             or normalized_skus > 0
             or len(corrections) > 0
         )
 
-        # Build baseline SOS Expert checks & audit note
         if not corrections:
             corrections.append(
                 f"Verified {len(po.line_items)} SKU line item(s), 4-party roles, and header total (${po.po_total or Decimal('0.00'):,.2f})"
@@ -1076,16 +975,16 @@ class F5AIClient:
             "sub_region": sub_region,
             "removed_fake_sku_rows": removed_fake_lines,
             "repaired_qty_lines": repaired_qty_lines,
-            "consolidated_splits": consolidated_splits,
+            "consolidated_splits": 0,
             "normalized_skus": normalized_skus,
+            "disagreements": disagreements,
             "rescued": rescued_from_false_block,
             "corrections": corrections,
             "corrections_count": len(corrections),
             "sos_verdict": (ai_payload or {}).get("sos_verdict") or "",
-            "confidence": max(float(po.confidence or 0.92), 0.96),
+            "confidence": float(po.confidence or 0.0),
         }
         po.extraction_diagnostics["ai_sos_expert"] = ai_diagnostics
-        po.confidence = max(float(po.confidence or 0.9), 0.96)
         return ai_diagnostics
 
     def generate_sos_summary(
@@ -1125,7 +1024,6 @@ class F5AIClient:
             append_checkpoint(self.checkpoint_path, cache_key, ai_response)
             return ai_response
 
-        # High-precision deterministic fallback
         if blockers:
             return (
                 f"Order {po_number} for {account} ({amount}) has {len(blockers)} blocking exception(s) "
@@ -1141,3 +1039,19 @@ class F5AIClient:
             f"Order {po_number} for {account} ({amount}) passed all automated checks and is fully reconciled against quote. "
             "Pending final SOS specialist approval."
         )
+
+
+# Singleton instance for pipeline/portal usage
+_default_client: Optional[F5AIClient] = None
+
+
+def get_ai_client() -> F5AIClient:
+    global _default_client
+    if _default_client is None:
+        _default_client = F5AIClient()
+    return _default_client
+
+
+def refine_po(po: ParsedPO, quote: Optional[Quote] = None) -> dict[str, Any]:
+    """Convenience wrapper to run the F5AI SOS Expert layer on a ParsedPO."""
+    return get_ai_client().refine_parsed_po(po, quote=quote)

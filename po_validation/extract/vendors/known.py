@@ -61,6 +61,15 @@ class IngramExtractor(BaseExtractor):
                 if eu_parties:
                     st = Party(role="ship_to", label="Ship To (EU)", lines=list(eu_parties[0]["lines"]), page=0)
                     po.parties.append(st.to_dict())
+
+        if not po.po_total:
+            from ..layout import to_decimal
+            from decimal import Decimal
+            for m_tot in re.finditer(r"\|\s*\d+\s*\|\s*\|\s*(\d{1,3}(?:,\d{3})*\.\d{2}|\d+\.\d{2})\b", view.raw_text):
+                cand = to_decimal(m_tot.group(1))
+                if cand is not None and cand > Decimal("0.00"):
+                    po.po_total = cand
+                    po.total_candidates.append((9, str(cand), "ingram_footer_total"))
         return po
 
 

@@ -50,7 +50,6 @@ HEADER_SYNONYMS: dict[str, list[str]] = {
     ],
     "part_number": [
         r"(?:item\s*\.?\s*)?part\s*(?:#|no\.?|number)?",
-        r"part\s*#\s*/\s*description",
         r"item\s*(?:code|number)", r"product\s*(?:code|number|#|id)?",
         r"material(?:\s*(?:no\.?|number))?", r"sku", r"model",
         r"vendor\s*item\s*#?", r"mfr\.?\s*part(?:\s*#)?", r"catalog(?:\s*#)?",
@@ -84,7 +83,7 @@ HEADER_SYNONYMS: dict[str, list[str]] = {
         r"total", r"ext\.?",
     ],
     "discount": [r"discount", r"disc\.?", r"discount\s*%", r"disc\s*%"],
-    "uom": [r"uom", r"u/m", r"unit\s*of\s*measure", r"um"],
+    "uom": [r"uom", r"u/m", r"unit\s*of\s*measure", r"um", r"unit"],
 }
 
 # Rows that end a table region.
@@ -146,7 +145,12 @@ def _label_matches(label: str) -> list[tuple[str, int]]:
         best = -1
         for pat in patterns:
             if re.fullmatch(pat, norm, re.I):
-                best = max(best, len(norm))
+                if norm == "unit" and field == "unit_price":
+                    best = max(best, 2)
+                elif norm == "unit" and field == "uom":
+                    best = max(best, 1)
+                else:
+                    best = max(best, len(norm))
         if best >= 0:
             out.append((field, best))
     return out
@@ -376,10 +380,10 @@ def find_regions(view: PdfView, min_score: int = 6) -> list[Region]:
             cont_rows = []
             for r in rows[:first_header_idx]:
                 if any(x in r.text for x in [
-                    "CONTINUED ON NEXT PAGE", "MERCHANDISE SHIPPED", "P.O. NUMBER",
+                    "CONTINUED ON NEXT PAGE", "MERCHANDISE SHIPPED", "VENDORS PLEASE NOTE", "P.O. NUMBER",
                     "SHIPPING INSTRUCTIONS", "VENDOR #", "PURCHASE ORDER",
                 ]):
-                    if any(x in r.text for x in ["CONTINUED", "MERCHANDISE", "P.O. NUMBER"]):
+                    if any(x in r.text for x in ["CONTINUED", "MERCHANDISE", "VENDORS PLEASE NOTE", "P.O. NUMBER"]):
                         break
                     continue
                 if STOP_RE.search(r.norm()):
@@ -396,7 +400,7 @@ def find_regions(view: PdfView, min_score: int = 6) -> list[Region]:
                         if n + 1 < len(header_positions) else len(rows))
             body = []
             for r in rows[body_start:body_end]:
-                if any(x in r.text for x in ["CONTINUED ON NEXT PAGE", "MERCHANDISE SHIPPED"]):
+                if any(x in r.text for x in ["CONTINUED ON NEXT PAGE", "MERCHANDISE SHIPPED", "VENDORS PLEASE NOTE"]):
                     break
                 if STOP_RE.search(r.norm()):
                     break

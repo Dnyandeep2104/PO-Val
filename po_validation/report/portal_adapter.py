@@ -491,9 +491,11 @@ def result_to_portal_order(
             "ship_to": ship_to_party,
         },
         "file": filename,
-        "received": datetime.now().strftime("%I:%M %p"),
+        "received": datetime.now(timezone.utc).strftime("%I:%M %p UTC"),
+        "ingested_at": datetime.now(timezone.utc).isoformat(),
         "ingested_at_iso": datetime.now(timezone.utc).isoformat(),
-        "poDate": str(po.po_date or datetime.now().strftime("%b %d, %Y")),
+        "po_date": po.po_date.isoformat() if po.po_date else None,
+        "poDate": str(po.po_date) if po.po_date else "Not stated",
         "quote": po.quote_number or (q.quote_number if q else ""),
         "opportunity": booking["opportunity"],
         "status": status_key,
@@ -523,9 +525,13 @@ def enrich_portal_order_analytics(
     """Enriches a portal order dict with theater/region, blocker classification, and F5AI SOS Expert insights."""
     po = result.po if result else None
 
-    # 1. Timestamp normalization for Today / This Week / This Month analytics
-    if not order.get("ingested_at_iso"):
-        order["ingested_at_iso"] = datetime.now(timezone.utc).isoformat()
+    # 1. Persistent ingestion timestamp in UTC (never invented from index modulo)
+    now_iso = datetime.now(timezone.utc).isoformat()
+    ingested_iso = order.get("ingested_at") or order.get("ingested_at_iso") or now_iso
+    order["ingested_at"] = ingested_iso
+    order["ingested_at_iso"] = ingested_iso
+    if "po_date" not in order:
+        order["po_date"] = po.po_date.isoformat() if (po and po.po_date) else order.get("poDate")
 
     # 2. Theater & Region classification
     if po is not None:
@@ -535,25 +541,21 @@ def enrich_portal_order_analytics(
         else:
             theater, sub_region = infer_theater_and_region(po)
     else:
-        # Infer from stored portal order fields when loading existing JSONs from disk
+        # Infer from stored portal order party/address fields when loading existing JSONs from disk
         parties = order.get("parties") or {}
-        blob_parts = [
+        party_names_blob = " ".join([
             order.get("from") or "",
             order.get("distributor_name") or "",
             order.get("reseller_name") or "",
             order.get("end_user_name") or "",
             order.get("account_name") or "",
             order.get("ship_to_name") or "",
-            json.dumps(parties) if isinstance(parties, dict) else "",
-        ]
-        for c in order.get("checklist") or []:
-            if isinstance(c, list) and len(c) >= 3:
-                blob_parts.append(str(c[2]))
-        blob = " ".join(blob_parts).lower()
+        ]).lower()
+        blob = (party_names_blob + " " + (json.dumps(parties).lower() if isinstance(parties, dict) else "")).strip()
 
-        if any(w in blob for w in ("gsllc", "carahsoft", "federal", "government", "dod", "usaf", "navy", "army")):
+        if any(w in party_names_blob for w in ("gsllc", "carahsoft", "u.s. government", "department of", "usaf", "navy", "army")):
             theater, sub_region = "US Federal (GSLLC)", "US Public Sector"
-        elif any(w in blob for w in ("japan", "tokyo", "osaka", "ntt ", "jpy")):
+        elif any(w in blob for w in ("japan", "tokyo", "osaka", "jpy", "ntt docomo", "ntt east", "ntt west", "ntt japan")) and "ntt america" not in party_names_blob:
             theater, sub_region = "JAPAN", "Japan"
         elif any(w in blob for w in ("singapore", "hong kong", "china", "india", "australia", "sydney", "mumbai", "apac", "welltake", "cloud4c", "wysetek", "fnz")):
             if "singapore" in blob:
@@ -637,75 +639,39 @@ def enrich_portal_order_analytics(
             ship_lines[-1] = ship_lines[-1] + cleaned_ln
         else:
             ship_lines.append(cleaned_ln)
-    shipping_address_str = ", ".join(ship_lines[:4]) if ship_lines else (order.get("ship_to_name") or "Verified on PO")
+    shipping_address_str = ", ".join(ship_lines[:4]) if ship_lines else (order.get("ship_to_name") or "Not stated on PO")
     order["shipping_address"] = shipping_address_str
 
-    # 5. F5AI SOS Expert (gpt-6-astra) Insights
+    # 5. F5AI SOS Expert (gpt-6-astra) Insights (only report verified actions, never fabricate)
     ai_diag = ((po.extraction_diagnostics or {}).get("ai_sos_expert") if po else None) or order.get("ai_insights") or {}
     corrections: list[str] = list(ai_diag.get("corrections") or [])
+    disagreements: list[str] = list(ai_diag.get("disagreements") or [])
 
-    po_num = str(order.get("po") or "")
-    from_lower = str(order.get("from") or "").lower()
-    dist_lower = str(order.get("distributor_name") or "").lower()
     lines_list = order.get("lines") or []
     amt = float((order.get("booking") or {}).get("amount") or 0.0)
-
-    # Synthesize domain-specific SOS expert insights if none were recorded on legacy stored JSON
-    if not corrections:
-        if "ingram" in dist_lower or "ingram" in from_lower or "51-191012" in po_num:
-            corrections = [
-                "Filtered 10 Ingram Micro ASCII box header/address rows (001–010) from being misread as SKU line items",
-                "Unwrapped mid-word split Reseller 'WORLD WIDE TECHNOLOGY, LLC' across box lines 003–004",
-                "Resolved 3-tier hierarchy: Distributor (Ingram Micro) → Reseller (WWT) → End User (General Motors Financial Company, Inc.)",
-                f"Verified true bookable SKU count ({len(lines_list)} line) and Net Total (${amt:,.2f})",
-            ]
-        elif "synnex" in dist_lower or "td synnex" in dist_lower or "tech data" in dist_lower:
-            corrections = [
-                f"Separated Distributor Bill-To ({order.get('distributor_name')}) from Reseller Partner ({order.get('reseller_name') or order.get('from')})",
-                f"Verified physical Ship-To destination ({order.get('ship_to_name')}) and End Customer ({order.get('end_user_name')})",
-                f"Cross-checked {len(lines_list)} PO line item(s) (${amt:,.2f}) against CPQ Quote {order.get('quote') or '(none)'}",
-            ]
-        elif "carahsoft" in dist_lower or theater == "US Federal (GSLLC)":
-            corrections = [
-                "Verified US Federal / Public Sector routing (F5 Networks GSLLC / Carahsoft channel)",
-                f"Validated End User agency ({order.get('end_user_name')}) and delivery address ({shipping_address_str[:60]})",
-                f"Reconciled {len(lines_list)} SKU line item(s) totaling ${amt:,.2f}",
-            ]
-        else:
-            corrections = [
-                f"Verified 4-party hierarchy: Bill-To ({order.get('distributor_name') if order.get('distributor_name') != 'None' else order.get('from')}), Reseller ({order.get('reseller_name') or 'Direct'}), End User ({order.get('end_user_name')})",
-                f"Separated physical Ship-To address ({shipping_address_str[:65]}) from product table",
-                f"Confirmed {len(lines_list)} real SKU line item(s) totaling ${amt:,.2f} prior to 11-point validation",
-            ]
-
-    rescued = bool(
-        ai_diag.get("rescued")
-        or any(
-            kw in " ".join(corrections).lower()
-            for kw in ("filtered", "unwrapped", "repaired", "extracted", "resolved", "separated")
-        )
-    )
+    rescued = bool(ai_diag.get("rescued", False))
 
     exec_note = ai_diag.get("executive_note")
     if not exec_note:
         if status in ("ready", "booked"):
             exec_note = (
-                f"F5AI SOS Expert (gpt-6-astra) verified all 4 party roles, physical shipping address, and "
-                f"{len(lines_list)} SKU line(s) (${amt:,.2f}). Cleared for 1-Click Salesforce Booking."
+                f"PO extraction and 11-point SOS checklist passed across {len(lines_list)} SKU line(s) (${amt:,.2f}). "
+                f"Cleared for 1-Click Salesforce Booking."
             )
         else:
             exec_note = (
-                f"F5AI SOS Expert (gpt-6-astra) normalized party roles and {len(lines_list)} SKU line(s), "
-                f"isolating {len(flags)} true policy exception(s) ({primary_blocker}) for specialist action."
+                f"Checklist flagged {len(flags)} policy/data exception(s) ({primary_blocker}) "
+                f"across {len(lines_list)} SKU line(s) (${amt:,.2f}) for specialist review."
             )
 
     order["ai_insights"] = {
-        "enabled": True,
+        "enabled": bool(ai_diag.get("enabled", True)),
         "model": ai_diag.get("model") or os.environ.get("F5AI_MODEL", "gpt-6-astra"),
         "gateway": "https://f5ai.pd.f5net.com/openai/",
-        "status": ai_diag.get("status") or "verified",
+        "status": ai_diag.get("status") or ("repaired" if corrections else "verified"),
         "corrections": corrections,
         "corrections_count": len(corrections),
+        "disagreements": disagreements,
         "rescued_from_false_block": rescued,
         "executive_note": exec_note,
         "verified_entities": {
